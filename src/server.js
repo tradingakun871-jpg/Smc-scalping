@@ -3,7 +3,7 @@ import crypto from "crypto";
 import {analyzeSMC,analyzeRollingM5} from "./smc.js";
 import {aiDecision} from "./ai.js";
 import {getFundamental} from "./fundamental.js";
-import {initDb,checkDb,touchHeartbeat,getHeartbeat,saveM5Candle,getM5Block,getCurrentM5Count,saveTradeSignal,updateOpenTrades,getTradeStats,getTradeJournal,getLatestOpenTrade} from "./db.js";
+import {initDb,checkDb,touchHeartbeat,getHeartbeat,saveM5Candle,getM5Block,getCurrentM5Count,saveTradeSignal,updateOpenTrades,getTradeStats,getTradeJournal,getLatestOpenTrade,hasTradeSignal,normalizeLegacyHourlySignals} from "./db.js";
 const app=express();app.use(express.json({limit:"1mb"}));app.use(express.static("public"));
 const buffers=new Map(),lastSignal=new Map(),latest=new Map(),aiRuntime=new Map();let lastMt5At=0;
 const minTech=Number(process.env.MIN_TECHNICAL_SCORE||70),minFinal=Number(process.env.MIN_FINAL_SCORE||70);
@@ -75,7 +75,7 @@ app.post("/api/mtf/analyze",bridgeAuth,async(req,res)=>{try{
  // Normalize the signal key/time to the CLOSED H1 candle slot, never to M5/request arrival time.
  const h1Slot=new Date(h1CloseTime);h1Slot.setUTCMinutes(0,0,0);
  const hourlyId=key+":"+h1Slot.toISOString();
- if(lastSignal.get(key+":HOURLY")===hourlyId)return res.json({status:"ALREADY_ANALYZED",hourlyId,latest:latest.get(key)||null});
+ if(lastSignal.get(key+":HOURLY")===hourlyId || await hasTradeSignal(hourlyId))return res.json({status:"ALREADY_ANALYZED",hourlyId,latest:latest.get(key)||null});
  const dailyBias=+previousD1.close>+previousD1.open?"BUY":+previousD1.close<+previousD1.open?"SELL":"NEUTRAL";
  const h1Direction=+h1Last.close>+h1Prev.high?"BUY":+h1Last.close<+h1Prev.low?"SELL":(+h1Last.close>=+h1Last.open?"BULLISH":"BEARISH");
  const technical=analyzeRollingM5(m5,{direction:h1Direction});
