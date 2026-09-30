@@ -91,4 +91,4 @@ app.post("/api/mtf/analyze",bridgeAuth,async(req,res)=>{try{
  res.json({status:result.decision==="NO_TRADE"?"WAIT":"SIGNAL",telegram,...record});
 }catch(e){res.status(400).json({error:e.message})}});
 app.post("/api/analyze",bridgeAuth,async(req,res)=>{try{const{symbol="XAUUSD",candles,fundamental={},h1Context={}}=req.body;const record=await run(symbol.toUpperCase(),candles,fundamental,h1Context);latest.set(symbol.toUpperCase(),record);res.json(record)}catch(e){res.status(400).json({error:e.message})}});
-const port=process.env.PORT||3000;initDb().then(()=>console.log("Database heartbeat ready")).catch(e=>console.error("Database init failed",e.message));app.listen(port,()=>console.log("SMC AI listening on",port));
+const port=process.env.PORT||3000;initDb().then(async()=>{await normalizeLegacyHourlySignals("XAUUSD");console.log("Database heartbeat ready")}).catch(e=>console.error("Database init failed",e.message));app.listen(port,()=>console.log("SMC AI listening on",port));
