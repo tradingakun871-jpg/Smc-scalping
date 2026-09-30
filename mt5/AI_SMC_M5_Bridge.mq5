@@ -1,7 +1,8 @@
 #property strict
-#property version "1.32"
+#property version "1.40"
 input string ApiUrl="https://smc-scalping-ai-production.up.railway.app/api/m5/candle";
 input string HeartbeatUrl="https://smc-scalping-ai-production.up.railway.app/api/mt5/heartbeat";
+input string MtfUrl="https://smc-scalping-ai-production.up.railway.app/api/mtf/analyze";
 input string ApiSymbol="XAUUSD";
 input int BrokerUtcOffsetHours=0;
 input int TimeoutMs=10000;
@@ -25,8 +26,17 @@ bool BackfillCurrentH1(){
 }
 
 bool SendHeartbeat(){string headers="Content-Type: application/json\r\n",respHeaders;char data[],result[];string body="{\"symbol\":\""+ApiSymbol+"\"}";StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);if(ArraySize(data)>0)ArrayResize(data,ArraySize(data)-1);ResetLastError();int code=WebRequest("POST",HeartbeatUrl,headers,TimeoutMs,data,result,respHeaders);string resp=CharArrayToString(result,0,-1,CP_UTF8);if(code>=200&&code<300){lastHeartbeat=TimeLocal();Print("SMC Heartbeat ONLINE | HTTP ",code," | ",resp);if(StringFind(resp,"\"resyncRequired\":true")>=0){Print("SMC Bridge RESYNC requested by server");BackfillCurrentH1();}return true;}Print("SMC Heartbeat failed HTTP=",code," err=",GetLastError()," | ",resp);return false;}
+string CandleObject(MqlRates &r){return StringFormat("{\"time\":\"%s\",\"open\":%.5f,\"high\":%.5f,\"low\":%.5f,\"close\":%.5f,\"tickVolume\":%I64d,\"closed\":true}",IsoUtc(r.time),r.open,r.high,r.low,r.close,r.tick_volume);}
+string RatesJson(ENUM_TIMEFRAMES tf,int count){MqlRates r[];ArraySetAsSeries(r,false);int n=CopyRates(_Symbol,tf,1,count,r);if(n<=0)return "[]";string out="[";for(int i=0;i<n;i++){if(i>0)out+=",";out+=CandleObject(r[i]);}return out+"]";}
+bool SendMTFAnalysis(){
+ MqlRates d1[];ArraySetAsSeries(d1,true);if(CopyRates(_Symbol,PERIOD_D1,1,1,d1)!=1){Print("MTF D1 CopyRates failed");return false;}
+ string body="{\"symbol\":\""+ApiSymbol+"\",\"previousD1\":"+CandleObject(d1[0])+",\"h1\":"+RatesJson(PERIOD_H1,24)+",\"m15\":"+RatesJson(PERIOD_M15,32)+",\"m5\":"+RatesJson(PERIOD_M5,36)+"}";
+ string headers="Content-Type: application/json\r\n",respHeaders;char data[],result[];StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);if(ArraySize(data)>0)ArrayResize(data,ArraySize(data)-1);
+ ResetLastError();int code=WebRequest("POST",MtfUrl,headers,TimeoutMs,data,result,respHeaders);string resp=CharArrayToString(result,0,-1,CP_UTF8);
+ Print("SMC MTF HTTP ",code," | ",resp);return code>=200&&code<300;
+}
 bool SendLatestClosed(){MqlRates r[];ArraySetAsSeries(r,true);if(CopyRates(_Symbol,PERIOD_M5,1,1,r)!=1)return false;if(r[0].time==lastSent)return true;return SendRate(r[0]);}
-int OnInit(){EventSetTimer(2);Print("AI SMC M5 Bridge V1.32 | backfill active H1 | chart=",_Symbol);BackfillCurrentH1();return INIT_SUCCEEDED;}
+int OnInit(){EventSetTimer(2);Print("AI SMC MTF Bridge V1.40 | D1 bias + H1/M15/M5 | chart=",_Symbol);BackfillCurrentH1();return INIT_SUCCEEDED;}
 void OnDeinit(const int reason){EventKillTimer();}
-void OnTimer(){if(lastHeartbeat==0||TimeLocal()-lastHeartbeat>=60)SendHeartbeat();static datetime current=0;datetime t=iTime(_Symbol,PERIOD_M5,0);if(t>0&&t!=current){current=t;SendLatestClosed();}}
+void OnTimer(){if(lastHeartbeat==0||TimeLocal()-lastHeartbeat>=60)SendHeartbeat();static datetime current=0;datetime t=iTime(_Symbol,PERIOD_M5,0);if(t>0&&t!=current){current=t;SendLatestClosed();SendMTFAnalysis();}}
 void OnTick(){}
