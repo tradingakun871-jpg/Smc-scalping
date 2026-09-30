@@ -1,6 +1,6 @@
 import express from "express";
 import crypto from "crypto";
-import {analyzeSMC} from "./smc.js";
+import {analyzeSMC,analyzeRollingM5} from "./smc.js";
 import {aiDecision} from "./ai.js";
 import {getFundamental} from "./fundamental.js";
 import {initDb,touchHeartbeat,getHeartbeat,saveM5Candle,getM5Block,getCurrentM5Count} from "./db.js";
@@ -27,7 +27,7 @@ app.post("/api/mtf/analyze",bridgeAuth,async(req,res)=>{try{
  if(!closed(previousD1)||![...h1,...m15,...m5].every(closed))return res.status(400).json({error:"Only valid CLOSED candles accepted"});
  const dailyBias=+previousD1.close>+previousD1.open?"BUY":+previousD1.close<+previousD1.open?"SELL":"NEUTRAL";
  const h1Last=h1.at(-1),h1Prev=h1.at(-2),h1Direction=+h1Last.close>+h1Prev.high?"BUY":+h1Last.close<+h1Prev.low?"SELL":(+h1Last.close>=+h1Last.open?"BULLISH":"BEARISH");
- const technical=analyzeSMC(m5.slice(-12),{direction:h1Direction});
+ const technical=analyzeRollingM5(m5,{direction:h1Direction});
  const side=technical.bullishScore>=technical.bearishScore?"BUY":"SELL",techScore=Math.max(technical.bullishScore,technical.bearishScore);
  const mandatory=side==="BUY"?technical.mandatoryBuy:technical.mandatorySell;
  let fund=fundamental;if(!Number.isFinite(Number(fund.score)))fund=await getFundamental();
