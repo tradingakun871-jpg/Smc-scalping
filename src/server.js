@@ -11,7 +11,8 @@ function bridgeAuth(req,res,next){const expected=process.env.BRIDGE_TOKEN;if(!ex
 
 async function sendTelegramSignal(symbol,record){
  const r=record?.result;
- if(!r||!["BUY","SELL"].includes(r.decision))return{sent:false,reason:"NO_SIGNAL"};
+ const hourly=record?.mode==="HOURLY_D1_MTF_ANALYSIS";
+ if(!r||(!hourly&&!["BUY","SELL"].includes(r.decision)))return{sent:false,reason:"NO_SIGNAL"};
  const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;
  if(!token||!chatId)return{sent:false,reason:"TELEGRAM_NOT_CONFIGURED"};
  const msg=[
@@ -30,7 +31,7 @@ async function sendTelegramSignal(symbol,record){
  r.fundamentalReason||"—",
  "",
  "🎯 TRADE PLAN",
- r.decision+" Entry: "+(r.entry??"—"),
+ (r.decision==="NO_TRADE"?"WAIT / NO ENTRY":r.decision+" Entry: "+(r.entry??"—")),
  "SL: "+(r.stopLoss??"—"),
  "TP1: "+(r.takeProfit1??"—"),
  "TP2: "+(r.takeProfit2??"—"),
@@ -39,7 +40,7 @@ async function sendTelegramSignal(symbol,record){
  "Fundamental Score: "+(record.fundamentalScore??"—"),
  "Final Score: "+(record.weightedScore??"—"),
  "",
- "📌 KENAPA ENTRY?",
+ r.decision==="NO_TRADE"?"📌 ALASAN WAIT":"📌 KENAPA ENTRY?",
  r.entryReason||r.technicalReason||"—",
  "",
  "❌ INVALIDATION",
@@ -66,23 +67,22 @@ app.post("/api/mtf/analyze",bridgeAuth,async(req,res)=>{try{
  if(!Array.isArray(h1)||!Array.isArray(m15)||!Array.isArray(m5)||h1.length<2||m15.length<4||m5.length<12)return res.status(400).json({error:"MTF history insufficient",required:{h1:2,m15:4,m5:12}});
  const closed=x=>x&&x.closed!==false&&Number.isFinite(+x.open)&&Number.isFinite(+x.high)&&Number.isFinite(+x.low)&&Number.isFinite(+x.close);
  if(!closed(previousD1)||![...h1,...m15,...m5].every(closed))return res.status(400).json({error:"Only valid CLOSED candles accepted"});
+ const h1Last=h1.at(-1),h1Prev=h1.at(-2);
+ const h1CloseTime=new Date(h1Last.time);
+ if(Number.isNaN(h1CloseTime.getTime()))return res.status(400).json({error:"Invalid last H1 time"});
+ const hourlyId=key+":"+h1CloseTime.toISOString();
+ if(lastSignal.get(key+":HOURLY")===hourlyId)return res.json({status:"ALREADY_ANALYZED",hourlyId,latest:latest.get(key)||null});
  const dailyBias=+previousD1.close>+previousD1.open?"BUY":+previousD1.close<+previousD1.open?"SELL":"NEUTRAL";
- const h1Last=h1.at(-1),h1Prev=h1.at(-2),h1Direction=+h1Last.close>+h1Prev.high?"BUY":+h1Last.close<+h1Prev.low?"SELL":(+h1Last.close>=+h1Last.open?"BULLISH":"BEARISH");
+ const h1Direction=+h1Last.close>+h1Prev.high?"BUY":+h1Last.close<+h1Prev.low?"SELL":(+h1Last.close>=+h1Last.open?"BULLISH":"BEARISH");
  const technical=analyzeRollingM5(m5,{direction:h1Direction});
  const side=technical.bullishScore>=technical.bearishScore?"BUY":"SELL",techScore=Math.max(technical.bullishScore,technical.bearishScore);
- const mandatory=side==="BUY"?technical.mandatoryBuy:technical.mandatorySell;
  let fund=fundamental;if(!Number.isFinite(Number(fund.score)))fund=await getFundamental();
  const fundamentalScore=Number.isFinite(Number(fund.score))?Number(fund.score):null;
  const weightedScore=fundamentalScore==null?+(techScore*.7).toFixed(2):+(techScore*.7+fundamentalScore*.3).toFixed(2);
- let result;
- if(!mandatory||techScore<minTech)result=noTrade(!mandatory?"MTF SMC setup incomplete":"Technical score below threshold");
- else if(dailyBias!=="NEUTRAL"&&side!==dailyBias)result=noTrade("Entry conflicts with previous D1 bias");
- else if(fundamentalScore==null)result=noTrade("Fundamental snapshot missing");
- else if(weightedScore<minFinal)result=noTrade("Final weighted score below threshold");
- else result=await aiDecision({symbol:key,mode:"DAILY_BIAS_MTF_ENTRY",trigger:"VALID_M5_SETUP",daily:{previousClosedD1:previousD1,bias:dailyBias},timeframes:{h1:h1.slice(-24),m15:m15.slice(-32),m5:m5.slice(-36)},structure:{h1Direction},technical,technicalScore:techScore,fundamental:{...fund,score:fundamentalScore},weightedScore,weights:{technical:70,fundamental:30}});
- const record={mode:"DAILY_BIAS_MTF_ENTRY",dailyBias,h1Direction,technicalScore:techScore,fundamentalScore,weightedScore,result,analyzedAt:new Date().toISOString()};
- latest.set(key,record);aiRuntime.set(key,{state:result.decision==="NO_TRADE"?"WAIT_MTF_ENTRY":"AI_COMPLETED",aiCalled:result.decision!=="NO_TRADE",lastAiAt:new Date().toISOString(),lastDecision:result.decision});
- let telegram={sent:false};try{telegram=await sendTelegramSignal(key,record)}catch(e){telegram={sent:false,error:e.message}}
+ const result=await aiDecision({symbol:key,mode:"HOURLY_D1_MTF_ANALYSIS",trigger:"CLOSED_H1",daily:{previousClosedD1:previousD1,bias:dailyBias},timeframes:{h1:h1.slice(-24),m15:m15.slice(-32),m5:m5.slice(-36)},structure:{h1Direction},technical,technicalScore:techScore,technicalDirection:side,fundamental:{...fund,score:fundamentalScore},weightedScore,thresholds:{minTechnical:minTech,minFinal},weights:{technical:70,fundamental:30},rule:"Analyze once per newly closed H1. BUY/SELL only when evidence is valid; otherwise NO_TRADE/WAIT with a specific reason."});
+ const record={mode:"HOURLY_D1_MTF_ANALYSIS",hourlyId,dailyBias,h1Direction,technicalScore:techScore,fundamentalScore,weightedScore,result,analyzedAt:new Date().toISOString()};
+ latest.set(key,record);lastSignal.set(key+":HOURLY",hourlyId);aiRuntime.set(key,{state:result.decision==="NO_TRADE"?"HOURLY_WAIT":"AI_COMPLETED",aiCalled:true,lastAiAt:new Date().toISOString(),lastDecision:result.decision});
+ let telegram={sent:false};try{telegram=await sendTelegramSignal(key,record)}catch(e){telegram={sent:false,error:e.message};console.error("Hourly Telegram failed",e.message)}
  res.json({status:result.decision==="NO_TRADE"?"WAIT":"SIGNAL",telegram,...record});
 }catch(e){res.status(400).json({error:e.message})}});
 app.post("/api/analyze",bridgeAuth,async(req,res)=>{try{const{symbol="XAUUSD",candles,fundamental={},h1Context={}}=req.body;const record=await run(symbol.toUpperCase(),candles,fundamental,h1Context);latest.set(symbol.toUpperCase(),record);res.json(record)}catch(e){res.status(400).json({error:e.message})}});
