@@ -1,5 +1,5 @@
 #property strict
-#property version "1.30"
+#property version "1.32"
 input string ApiUrl="https://smc-scalping-ai-production.up.railway.app/api/m5/candle";
 input string HeartbeatUrl="https://smc-scalping-ai-production.up.railway.app/api/mt5/heartbeat";
 input string ApiSymbol="XAUUSD";
@@ -24,9 +24,9 @@ bool BackfillCurrentH1(){
  return true;
 }
 
-bool SendHeartbeat(){string headers="Content-Type: application/json\\r\\n",respHeaders;char data[],result[];string body="{\\\"symbol\\\":\\\""+ApiSymbol+"\\\"}";StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);if(ArraySize(data)>0)ArrayResize(data,ArraySize(data)-1);ResetLastError();int code=WebRequest("POST",HeartbeatUrl,headers,TimeoutMs,data,result,respHeaders);if(code>=200&&code<300){lastHeartbeat=TimeLocal();return true;}Print("SMC Heartbeat failed HTTP=",code," err=",GetLastError());return false;}
+bool SendHeartbeat(){string headers="Content-Type: application/json\r\n",respHeaders;char data[],result[];string body="{\"symbol\":\""+ApiSymbol+"\"}";StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);if(ArraySize(data)>0)ArrayResize(data,ArraySize(data)-1);ResetLastError();int code=WebRequest("POST",HeartbeatUrl,headers,TimeoutMs,data,result,respHeaders);string resp=CharArrayToString(result,0,-1,CP_UTF8);if(code>=200&&code<300){lastHeartbeat=TimeLocal();Print("SMC Heartbeat ONLINE | HTTP ",code," | ",resp);if(StringFind(resp,"\"resyncRequired\":true")>=0){Print("SMC Bridge RESYNC requested by server");BackfillCurrentH1();}return true;}Print("SMC Heartbeat failed HTTP=",code," err=",GetLastError()," | ",resp);return false;}
 bool SendLatestClosed(){MqlRates r[];ArraySetAsSeries(r,true);if(CopyRates(_Symbol,PERIOD_M5,1,1,r)!=1)return false;if(r[0].time==lastSent)return true;return SendRate(r[0]);}
-int OnInit(){EventSetTimer(2);Print("AI SMC M5 Bridge V1.30 | backfill active H1 | chart=",_Symbol);BackfillCurrentH1();return INIT_SUCCEEDED;}
+int OnInit(){EventSetTimer(2);Print("AI SMC M5 Bridge V1.32 | backfill active H1 | chart=",_Symbol);BackfillCurrentH1();return INIT_SUCCEEDED;}
 void OnDeinit(const int reason){EventKillTimer();}
 void OnTimer(){if(lastHeartbeat==0||TimeLocal()-lastHeartbeat>=60)SendHeartbeat();static datetime current=0;datetime t=iTime(_Symbol,PERIOD_M5,0);if(t>0&&t!=current){current=t;SendLatestClosed();}}
 void OnTick(){}
