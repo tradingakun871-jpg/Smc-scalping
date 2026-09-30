@@ -26,3 +26,16 @@ export function analyzeSMC(candles,h1Context={}){
  const mandatoryBuy=sweepLow&&bosUp&&bullDisp&&!!bullOB?.fresh&&bullFvgs.length>0,mandatorySell=sweepHigh&&bosDown&&bearDisp&&!!bearOB?.fresh&&bearFvgs.length>0;
  return{bullishScore,bearishScore,mandatoryBuy,mandatorySell,features:{bosUp,bosDown,sweepLow,sweepHigh,bullDisp,bearDisp,bullFvg:bullFvgs.length>0,bearFvg:bearFvgs.length>0,bullOB,bearOB,bullRetest,bearRetest,h1Bull,h1Bear},zones:{bullFvgs,bearFvgs},range:{high:Math.max(...c.map(x=>x.high)),low:Math.min(...c.map(x=>x.low))}};
 }
+
+export function analyzeRollingM5(candles,h1Context={}){
+ if(!Array.isArray(candles)||candles.length<12)throw new Error("At least 12 closed M5 candles required");
+ const raw=candles.slice(-12).map(x=>({...x,time:new Date(x.time),open:+x.open,high:+x.high,low:+x.low,close:+x.close}));
+ if(raw.some(x=>Number.isNaN(x.time.getTime())||![x.open,x.high,x.low,x.close].every(Number.isFinite)))throw new Error("Invalid rolling M5 OHLC/time");
+ raw.sort((a,b)=>a.time-b.time);
+ for(let i=1;i<raw.length;i++)if(raw[i].time-raw[i-1].time!==300000)throw new Error("Rolling M5 candles must be contiguous");
+ const base=raw[0].time;
+ const normalized=raw.map((x,i)=>({...x,time:new Date(Date.UTC(base.getUTCFullYear(),base.getUTCMonth(),base.getUTCDate(),base.getUTCHours(),i*5,0))}));
+ const result=analyzeSMC(normalized,h1Context);
+ result.sourceWindow={mode:"ROLLING_12_M5",from:raw[0].time.toISOString(),to:raw.at(-1).time.toISOString()};
+ return result;
+}
