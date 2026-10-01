@@ -9,6 +9,27 @@ const buffers=new Map(),lastSignal=new Map(),latest=new Map(),aiRuntime=new Map(
 const minTech=Number(process.env.MIN_TECHNICAL_SCORE||70),minFinal=Number(process.env.MIN_FINAL_SCORE||70);
 function bridgeAuth(req,res,next){const expected=process.env.BRIDGE_TOKEN;if(!expected)return res.status(503).json({error:"BRIDGE_TOKEN not configured"});const auth=req.get("authorization")||"";const token=auth.startsWith("Bearer ")?auth.slice(7):"";const a=Buffer.from(token),b=Buffer.from(expected);if(a.length!==b.length||!crypto.timingSafeEqual(a,b))return res.status(401).json({error:"Unauthorized bridge"});next();}
 
+
+function calculateTargetProbabilities(record,result){
+ const side=result?.decision;
+ if(!["BUY","SELL"].includes(side))return result;
+ const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+ const tech=Number(record.technicalScore), weighted=Number(record.weightedScore), conf=Number(result.confidence);
+ let p=50; const reasons=[];
+ if(Number.isFinite(tech)){p+=(tech-50)*0.30;reasons.push("technical score "+tech.toFixed(0)+"%");}
+ if(Number.isFinite(weighted)){p+=(weighted-50)*0.20;reasons.push("final score "+weighted.toFixed(0)+"%");}
+ if(Number.isFinite(conf)){p+=(conf-50)*0.20;reasons.push("AI confidence "+conf.toFixed(0)+"%");}
+ if(record.dailyBias){const ok=record.dailyBias===side;p+=ok?6:-6;reasons.push("D1 "+(ok?"searah":"berlawanan"));}
+ if(record.h1Direction){const ok=record.h1Direction===side||record.h1Direction===(side==="BUY"?"BULLISH":"BEARISH");p+=ok?8:-8;reasons.push("H1 "+(ok?"searah":"berlawanan"));}
+ const tp1=Math.round(clamp(p,25,90));
+ let penalty=12; const e=Number(result.entry),t1=Number(result.takeProfit1),t2=Number(result.takeProfit2);
+ if([e,t1,t2].every(Number.isFinite)){const d1=Math.abs(t1-e),d2=Math.abs(t2-e);if(d1>0)penalty+=Math.max(0,Math.min(15,(d2/d1-1)*8));}
+ const tp2=Math.round(clamp(tp1-penalty,15,tp1));
+ result.tp1ProbabilityPct=tp1;result.tp2ProbabilityPct=tp2;
+ result.probabilityReason="Estimasi berbasis "+reasons.join(", ")+"; TP2 lebih rendah karena target lebih jauh. Bukan jaminan hasil.";
+ return result;
+}
+
 async function sendTelegramSignal(symbol,record){
  const r=record?.result;
  const hourly=record?.mode==="HOURLY_D1_MTF_ANALYSIS";
@@ -36,6 +57,9 @@ async function sendTelegramSignal(symbol,record){
  "TP1: "+(r.takeProfit1??"—"),
  "TP2: "+(r.takeProfit2??"—"),
  "Confidence: "+(r.confidence??0)+"%",
+ "TP1 Probability: "+(r.tp1ProbabilityPct??"—")+"%",
+ "TP2 Probability: "+(r.tp2ProbabilityPct??"—")+"%",
+ "Reason Probabilitas: "+(r.probabilityReason||"—"),
  "Technical Score: "+(record.technicalScore??"—"),
  "Fundamental Score: "+(record.fundamentalScore??"—"),
  "Final Score: "+(record.weightedScore??"—"),
@@ -90,6 +114,7 @@ app.post("/api/mtf/analyze",bridgeAuth,async(req,res)=>{try{
  const result=await aiDecision({symbol:key,mode:"HOURLY_D1_MTF_ANALYSIS",trigger:"CLOSED_H1",daily:{previousClosedD1:d1,bias:dailyBias},timeframes:{h1:H1.slice(-24),m15:M15.slice(-32),m5:M5.slice(-36)},structure:{h1Direction},technical,technicalScore:techScore,technicalDirection:side,fundamental:{...fund,score:fundamentalScore},weightedScore,thresholds:{minTechnical:minTech,minFinal},weights:{technical:70,fundamental:30},rule:"Analyze exactly once per newly closed H1 and always return one actionable directional entry signal: BUY or SELL. Never return NO_TRADE in HOURLY_D1_MTF_ANALYSIS. When evidence conflicts or is weak, select the stronger direction, lower confidence, and explain the weakness. Derive Entry, SL, TP1 and TP2 from supplied market structure."});
  if(["BUY","SELL"].includes(result.decision)&&[result.entry,result.stopLoss,result.takeProfit1,result.takeProfit2].every(v=>Number.isFinite(Number(v)))){await saveTradeSignal({hourlyId,symbol:key,side:result.decision,entry:+result.entry,stopLoss:+result.stopLoss,tp1:+result.takeProfit1,tp2:+result.takeProfit2,confidence:+result.confidence||null,signalTime:h1Slot.toISOString()})}
  const record={mode:"HOURLY_D1_MTF_ANALYSIS",hourlyId,dailyBias,h1Direction,technicalScore:techScore,fundamentalScore,weightedScore,result,analyzedAt:new Date().toISOString()};
+ calculateTargetProbabilities(record,result);
  latest.set(key,record);lastSignal.set(key+":HOURLY",hourlyId);aiRuntime.set(key,{state:result.decision==="NO_TRADE"?"HOURLY_WAIT":"AI_COMPLETED",aiCalled:true,lastAiAt:new Date().toISOString(),lastDecision:result.decision});
  let telegram={sent:false};try{telegram=await sendTelegramSignal(key,record)}catch(e){telegram={sent:false,error:e.message};console.error("Hourly Telegram failed",e.message)}
  res.json({status:result.decision==="NO_TRADE"?"WAIT":"SIGNAL",telegram,...record});
