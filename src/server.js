@@ -83,7 +83,7 @@ app.post("/api/mtf/analyze",bridgeAuth,async(req,res)=>{try{
  const d1=normalizeCandle(previousD1),H1=h1.map(normalizeCandle),M15=m15.map(normalizeCandle),M5=m5.map(normalizeCandle);
  const valid=x=>x&&x.closed&&x.time!=null&&!Number.isNaN(new Date(x.time).getTime())&&[x.open,x.high,x.low,x.close].every(Number.isFinite);
  const bad={d1:valid(d1)?0:1,h1:H1.filter(x=>!valid(x)).length,m15:M15.filter(x=>!valid(x)).length,m5:M5.filter(x=>!valid(x)).length};
- if(bad.d1||bad.h1||bad.m15||bad.m5){console.error("MTF_INVALID_PAYLOAD",JSON.stringify({symbol:key,bad,lengths:{h1:H1.length,m15:M15.length,m5:M5.length}}));return res.status(400).json({error:"Invalid MTF candle payload",bad,lengths:{h1:H1.length,m15:M15.length,m5:M5.length}})}
+ if(bad.d1||bad.h1||bad.m15||bad.m5){console.error("MTF_INVALID_PAYLOAD",JSON.stringify({symbol:key,bad,lengths:{h1:H1.length,m15:M15.length,m5:M5.length}}));return res.status(400).json({error:"Invalid MTF candle payload",bad,lengths:{h1:H1.length,m15:M15.length,m5:M5.length}});}
  const h1Last=H1.at(-1),h1Prev=H1.at(-2);
  const h1CloseTime=new Date(h1Last.time);
  if(Number.isNaN(h1CloseTime.getTime()))return res.status(400).json({error:"Invalid last H1 time"});
@@ -102,19 +102,25 @@ app.post("/api/mtf/analyze",bridgeAuth,async(req,res)=>{try{
  const fundamentalScore=Number.isFinite(Number(fund.score))?Number(fund.score):null;
  const weightedScore=fundamentalScore==null?+(techScore*.7).toFixed(2):+(techScore*.7+fundamentalScore*.3).toFixed(2);
  const result=await aiDecision({symbol:key,mode:"HOURLY_D1_MTF_ANALYSIS",trigger:"CLOSED_H1",daily:{previousClosedD1:d1,bias:dailyBias},timeframes:{h1:H1.slice(-24),m15:M15.slice(-32),m5:M5.slice(-36)},structure:{h1Direction},technical,technicalScore:techScore,technicalDirection:side,fundamental:{...fund,score:fundamentalScore},weightedScore,thresholds:{minTechnical:minTech,minFinal},weights:{technical:70,fundamental:30},rule:"Analyze exactly once per newly closed H1 and always return one actionable directional entry signal: BUY or SELL. Never return NO_TRADE in HOURLY_D1_MTF_ANALYSIS. When evidence conflicts or is weak, select the stronger direction, lower confidence, and explain the weakness. Derive Entry, SL, TP1 and TP2 from supplied market structure."});
- if(["BUY","SELL"].includes(result.decision)&&[result.entry,result.stopLoss,result.takeProfit1,result.takeProfit2].every(v=>Number.isFinite(Number(v)))){
-   const slPips=Math.abs(Number(result.entry)-Number(result.stopLoss))/0.10;
-   if(slPips>=50&&slPips<=60){
-     await saveTradeSignal({hourlyId,symbol:key,side:result.decision,entry:+result.entry,stopLoss:+result.stopLoss,tp1:+result.takeProfit1,tp2:+result.takeProfit2,confidence:+result.confidence||null,signalTime:h1Slot.toISOString()});
-   }else{
-     console.error("RETEST_SL_REJECTED",hourlyId,"SL pips",slPips.toFixed(1),"required 50-60");
-     return res.status(422).json({error:"AI_SL_OUT_OF_RANGE",required:"50-60 pips",slPips:+slPips.toFixed(1),hourlyId});
-   }
+ 
+ // SERVER ENFORCEMENT: Fix stopLoss at exactly 60 pips for XAUUSD H1 BUY/SELL signals
+ if(["BUY","SELL"].includes(result.decision)&&Number.isFinite(Number(result.entry))){
+   const entry=Number(result.entry);
+   const risk=6.0; // 60 pips = 6.0 price units for XAUUSD
+   const enforcedSL=result.decision==="BUY"?entry-risk:entry+risk;
+   const tp1Risk=entry-enforcedSL; // BUY: positive; SELL: negative
+   const enforcedTP1=result.decision==="BUY"?entry+Math.abs(tp1Risk):entry-Math.abs(tp1Risk); // 1R
+   const enforcedTP2=result.decision==="BUY"?entry+2*Math.abs(tp1Risk):entry-2*Math.abs(tp1Risk); // 2R
+   
+   console.log("SL_ENFORCEMENT",hourlyId,{decision:result.decision,aiEntry:Number(result.entry),aiSL:Number(result.stopLoss),enforced:{entry,sl:enforcedSL,tp1:enforcedTP1,tp2:enforcedTP2}});
+   
+   await saveTradeSignal({hourlyId,symbol:key,side:result.decision,entry,stopLoss:enforcedSL,tp1:enforcedTP1,tp2:enforcedTP2,confidence:+result.confidence||null,signalTime:h1Slot.toISOString()});
  }
  const record={mode:"HOURLY_D1_MTF_ANALYSIS",hourlyId,expiredPrevious:expired,dailyBias,h1Direction,technicalScore:techScore,fundamentalScore,weightedScore,result,analyzedAt:new Date().toISOString()};
  latest.set(key,record);lastSignal.set(key+":HOURLY",hourlyId);aiRuntime.set(key,{state:result.decision==="NO_TRADE"?"HOURLY_WAIT":"AI_COMPLETED",aiCalled:true,lastAiAt:new Date().toISOString(),lastDecision:result.decision});
- let telegram={sent:false};try{telegram=await sendTelegramSignal(key,record)}catch(e){telegram={sent:false,error:e.message};console.error("Hourly Telegram failed",e.message)}
+ let telegram={sent:false};try{telegram=await sendTelegramSignal(key,record)}catch(e){telegram={sent:false,error:e.message};console.error("Hourly Telegram failed",e.message);}
  res.json({status:result.decision==="NO_TRADE"?"WAIT":"SIGNAL",telegram,...record});
-}catch(e){console.error("MTF_ANALYZE_ERROR",e?.stack||e?.message||e);res.status(400).json({error:e.message})}});
+}catch(e){console.error("MTF_ANALYZE_ERROR",e?.stack||e?.message||e);res.status(400).json({error:e.message});}});
 app.post("/api/analyze",bridgeAuth,async(req,res)=>{try{const{symbol="XAUUSD",candles,fundamental={},h1Context={}}=req.body;const record=await run(symbol.toUpperCase(),candles,fundamental,h1Context);latest.set(symbol.toUpperCase(),record);res.json(record)}catch(e){res.status(400).json({error:e.message})}});
 const port=process.env.PORT||3000;initDb().then(async()=>{await normalizeLegacyHourlySignals("XAUUSD");console.log("Database heartbeat ready")}).catch(e=>console.error("Database init failed",e.message));app.listen(port,()=>console.log("SMC AI listening on",port));
+
