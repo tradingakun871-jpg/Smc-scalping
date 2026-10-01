@@ -102,14 +102,37 @@ app.post("/api/mtf/analyze",bridgeAuth,async(req,res)=>{try{
  const fundamentalScore=Number.isFinite(Number(fund.score))?Number(fund.score):null;
  const weightedScore=fundamentalScore==null?+(techScore*.7).toFixed(2):+(techScore*.7+fundamentalScore*.3).toFixed(2);
  const result=await aiDecision({symbol:key,mode:"HOURLY_D1_MTF_ANALYSIS",trigger:"CLOSED_H1",daily:{previousClosedD1:d1,bias:dailyBias},timeframes:{h1:H1.slice(-24),m15:M15.slice(-32),m5:M5.slice(-36)},structure:{h1Direction},technical,technicalScore:techScore,technicalDirection:side,fundamental:{...fund,score:fundamentalScore},weightedScore,thresholds:{minTechnical:minTech,minFinal},weights:{technical:70,fundamental:30},rule:"Analyze exactly once per newly closed H1 and always return one actionable directional entry signal: BUY or SELL. Never return NO_TRADE in HOURLY_D1_MTF_ANALYSIS. When evidence conflicts or is weak, select the stronger direction, lower confidence, and explain the weakness. Derive Entry, SL, TP1 and TP2 from supplied market structure."});
- if(["BUY","SELL"].includes(result.decision)&&[result.entry,result.stopLoss,result.takeProfit1,result.takeProfit2].every(v=>Number.isFinite(Number(v)))){
-   const slPips=Math.abs(Number(result.entry)-Number(result.stopLoss))/0.10;
-   if(slPips>=50&&slPips<=60){
-     await saveTradeSignal({hourlyId,symbol:key,side:result.decision,entry:+result.entry,stopLoss:+result.stopLoss,tp1:+result.takeProfit1,tp2:+result.takeProfit2,confidence:+result.confidence||null,signalTime:h1Slot.toISOString()});
-   }else{
-     console.error("RETEST_SL_REJECTED",hourlyId,"SL pips",slPips.toFixed(1),"required 50-60");
-     return res.status(422).json({error:"AI_SL_OUT_OF_RANGE",required:"50-60 pips",slPips:+slPips.toFixed(1),hourlyId});
+ 
+ // FIX: Override stopLoss to FIXED 60 pips (6.0 price units) for XAUUSD
+ // Formula: BUY = entry - 6.0, SELL = entry + 6.0
+ if([result.decision].includes("BUY")||[result.decision].includes("SELL")){
+   if(Number.isFinite(Number(result.entry))){
+     const entry=+result.entry;
+     let stopLoss,tp1,tp2;
+     
+     if(result.decision==="BUY"){
+       stopLoss=+(entry-6.0).toFixed(2);
+       const risk=entry-stopLoss;
+       tp1=+(entry+risk).toFixed(2);
+       tp2=+(entry+2*risk).toFixed(2);
+     }else if(result.decision==="SELL"){
+       stopLoss=+(entry+6.0).toFixed(2);
+       const risk=stopLoss-entry;
+       tp1=+(entry-risk).toFixed(2);
+       tp2=+(entry-2*risk).toFixed(2);
+     }
+     
+     result.stopLoss=stopLoss;
+     result.takeProfit1=tp1;
+     result.takeProfit2=tp2;
+     
+     const slPips=Math.abs(entry-stopLoss)/0.10;
+     console.log("XAUUSD_SL_OVERRIDE",hourlyId,"Decision:",result.decision,"Entry:",entry,"SL:",stopLoss,"SL pips:",slPips.toFixed(1),"TP1:",tp1,"TP2:",tp2);
    }
+ }
+ 
+ if([result.decision].includes("BUY")||[result.decision].includes("SELL")&&[result.entry,result.stopLoss,result.takeProfit1,result.takeProfit2].every(v=>Number.isFinite(Number(v)))){
+   await saveTradeSignal({hourlyId,symbol:key,side:result.decision,entry:+result.entry,stopLoss:+result.stopLoss,tp1:+result.takeProfit1,tp2:+result.takeProfit2,confidence:+result.confidence||null,signalTime:h1Slot.toISOString()});
  }
  const record={mode:"HOURLY_D1_MTF_ANALYSIS",hourlyId,expiredPrevious:expired,dailyBias,h1Direction,technicalScore:techScore,fundamentalScore,weightedScore,result,analyzedAt:new Date().toISOString()};
  latest.set(key,record);lastSignal.set(key+":HOURLY",hourlyId);aiRuntime.set(key,{state:result.decision==="NO_TRADE"?"HOURLY_WAIT":"AI_COMPLETED",aiCalled:true,lastAiAt:new Date().toISOString(),lastDecision:result.decision});
@@ -118,3 +141,4 @@ app.post("/api/mtf/analyze",bridgeAuth,async(req,res)=>{try{
 }catch(e){console.error("MTF_ANALYZE_ERROR",e?.stack||e?.message||e);res.status(400).json({error:e.message})}});
 app.post("/api/analyze",bridgeAuth,async(req,res)=>{try{const{symbol="XAUUSD",candles,fundamental={},h1Context={}}=req.body;const record=await run(symbol.toUpperCase(),candles,fundamental,h1Context);latest.set(symbol.toUpperCase(),record);res.json(record)}catch(e){res.status(400).json({error:e.message})}});
 const port=process.env.PORT||3000;initDb().then(async()=>{await normalizeLegacyHourlySignals("XAUUSD");console.log("Database heartbeat ready")}).catch(e=>console.error("Database init failed",e.message));app.listen(port,()=>console.log("SMC AI listening on",port));
+
