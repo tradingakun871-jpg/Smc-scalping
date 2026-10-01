@@ -93,6 +93,6 @@ app.post("/api/mtf/analyze",bridgeAuth,async(req,res)=>{try{
  latest.set(key,record);lastSignal.set(key+":HOURLY",hourlyId);aiRuntime.set(key,{state:result.decision==="NO_TRADE"?"HOURLY_WAIT":"AI_COMPLETED",aiCalled:true,lastAiAt:new Date().toISOString(),lastDecision:result.decision});
  let telegram={sent:false};try{telegram=await sendTelegramSignal(key,record)}catch(e){telegram={sent:false,error:e.message};console.error("Hourly Telegram failed",e.message)}
  res.json({status:result.decision==="NO_TRADE"?"WAIT":"SIGNAL",telegram,...record});
-}catch(e){res.status(400).json({error:e.message})}});
+}catch(e){console.error("MTF_ANALYZE_ERROR",e?.stack||e?.message||e);res.status(400).json({error:e.message})}});
 app.post("/api/analyze",bridgeAuth,async(req,res)=>{try{const{symbol="XAUUSD",candles,fundamental={},h1Context={}}=req.body;const record=await run(symbol.toUpperCase(),candles,fundamental,h1Context);latest.set(symbol.toUpperCase(),record);res.json(record)}catch(e){res.status(400).json({error:e.message})}});
 const port=process.env.PORT||3000;initDb().then(async()=>{await normalizeLegacyHourlySignals("XAUUSD");console.log("Database heartbeat ready")}).catch(e=>console.error("Database init failed",e.message));app.listen(port,()=>console.log("SMC AI listening on",port));
