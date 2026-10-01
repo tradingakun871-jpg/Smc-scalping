@@ -7,7 +7,7 @@ input string ApiSymbol="XAUUSD";
 input int BrokerUtcOffsetHours=0;
 input int TimeoutMs=10000;
 datetime lastSent=0;
-datetime lastHeartbeat=0;
+datetime lastHeartbeat=0;\ndatetime lastResyncAttempt=0;
 
 string IsoUtc(datetime brokerTime){datetime u=brokerTime-BrokerUtcOffsetHours*3600;MqlDateTime d;TimeToStruct(u,d);return StringFormat("%04d-%02d-%02dT%02d:%02d:00Z",d.year,d.mon,d.day,d.hour,d.min);}
 string JsonCandle(MqlRates &r){return StringFormat("{\"symbol\":\"%s\",\"candle\":{\"time\":\"%s\",\"open\":%.5f,\"high\":%.5f,\"low\":%.5f,\"close\":%.5f,\"tickVolume\":%I64d,\"closed\":true}}",ApiSymbol,IsoUtc(r.time),r.open,r.high,r.low,r.close,r.tick_volume);}
@@ -21,7 +21,7 @@ bool BackfillCurrentH1(){
  if(closedCount<=0)return true;
  MqlRates rates[];ArraySetAsSeries(rates,false);
  if(CopyRates(_Symbol,PERIOD_M5,1,closedCount,rates)!=closedCount){Print("SMC Bridge backfill CopyRates failed ",GetLastError());return false;}
- for(int i=0;i<ArraySize(rates);i++){MqlDateTime x;TimeToStruct(rates[i].time,x);if(x.hour==d.hour&&rates[i].time<current[0].time){if(!SendRate(rates[i]))return false;}}
+ for(int i=0;i<ArraySize(rates);i++){MqlDateTime x;TimeToStruct(rates[i].time,x);if(x.hour==d.hour&&rates[i].time<current[0].time&&rates[i].time>lastSent){if(!SendRate(rates[i]))return false;}}
  return true;
 }
 
