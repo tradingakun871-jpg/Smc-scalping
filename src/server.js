@@ -68,23 +68,26 @@ app.post("/api/mtf/analyze",bridgeAuth,async(req,res)=>{try{
  const key=symbol.toUpperCase();
  if(!previousD1?.time)return res.status(400).json({error:"previousD1 closed candle required"});
  if(!Array.isArray(h1)||!Array.isArray(m15)||!Array.isArray(m5)||h1.length<2||m15.length<4||m5.length<12)return res.status(400).json({error:"MTF history insufficient",required:{h1:2,m15:4,m5:12}});
- const closed=x=>x&&x.closed!==false&&Number.isFinite(+x.open)&&Number.isFinite(+x.high)&&Number.isFinite(+x.low)&&Number.isFinite(+x.close);
- if(!closed(previousD1)||![...h1,...m15,...m5].every(closed))return res.status(400).json({error:"Only valid CLOSED candles accepted"});
- const h1Last=h1.at(-1),h1Prev=h1.at(-2);
+ const normalizeCandle=x=>{if(!x||typeof x!=="object")return null;const time=x.time??x.timestamp??x.datetime;return {...x,time,open:Number(x.open),high:Number(x.high),low:Number(x.low),close:Number(x.close),closed:x.closed!==false}};
+ const d1=normalizeCandle(previousD1),H1=h1.map(normalizeCandle),M15=m15.map(normalizeCandle),M5=m5.map(normalizeCandle);
+ const valid=x=>x&&x.closed&&x.time!=null&&!Number.isNaN(new Date(x.time).getTime())&&[x.open,x.high,x.low,x.close].every(Number.isFinite);
+ const bad={d1:valid(d1)?0:1,h1:H1.filter(x=>!valid(x)).length,m15:M15.filter(x=>!valid(x)).length,m5:M5.filter(x=>!valid(x)).length};
+ if(bad.d1||bad.h1||bad.m15||bad.m5){console.error("MTF_INVALID_PAYLOAD",JSON.stringify({symbol:key,bad,lengths:{h1:H1.length,m15:M15.length,m5:M5.length}}));return res.status(400).json({error:"Invalid MTF candle payload",bad,lengths:{h1:H1.length,m15:M15.length,m5:M5.length}})}
+ const h1Last=H1.at(-1),h1Prev=H1.at(-2);
  const h1CloseTime=new Date(h1Last.time);
  if(Number.isNaN(h1CloseTime.getTime()))return res.status(400).json({error:"Invalid last H1 time"});
  // Normalize the signal key/time to the CLOSED H1 candle slot, never to M5/request arrival time.
  const h1Slot=new Date(h1CloseTime);h1Slot.setUTCMinutes(0,0,0);
  const hourlyId=key+":"+h1Slot.toISOString();
  if(lastSignal.get(key+":HOURLY")===hourlyId || await hasTradeSignal(hourlyId))return res.json({status:"ALREADY_ANALYZED",hourlyId,latest:latest.get(key)||null});
- const dailyBias=+previousD1.close>+previousD1.open?"BUY":+previousD1.close<+previousD1.open?"SELL":"NEUTRAL";
+ const dailyBias=d1.close>d1.open?"BUY":d1.close<d1.open?"SELL":"NEUTRAL";
  const h1Direction=+h1Last.close>+h1Prev.high?"BUY":+h1Last.close<+h1Prev.low?"SELL":(+h1Last.close>=+h1Last.open?"BULLISH":"BEARISH");
- const technical=analyzeRollingM5(m5,{direction:h1Direction});
+ const technical=analyzeRollingM5(M5,{direction:h1Direction});
  const side=technical.bullishScore>=technical.bearishScore?"BUY":"SELL",techScore=Math.max(technical.bullishScore,technical.bearishScore);
  let fund=fundamental;if(!Number.isFinite(Number(fund.score)))fund=await getFundamental();
  const fundamentalScore=Number.isFinite(Number(fund.score))?Number(fund.score):null;
  const weightedScore=fundamentalScore==null?+(techScore*.7).toFixed(2):+(techScore*.7+fundamentalScore*.3).toFixed(2);
- const result=await aiDecision({symbol:key,mode:"HOURLY_D1_MTF_ANALYSIS",trigger:"CLOSED_H1",daily:{previousClosedD1:previousD1,bias:dailyBias},timeframes:{h1:h1.slice(-24),m15:m15.slice(-32),m5:m5.slice(-36)},structure:{h1Direction},technical,technicalScore:techScore,technicalDirection:side,fundamental:{...fund,score:fundamentalScore},weightedScore,thresholds:{minTechnical:minTech,minFinal},weights:{technical:70,fundamental:30},rule:"Analyze exactly once per newly closed H1 and always return one actionable directional entry signal: BUY or SELL. Never return NO_TRADE in HOURLY_D1_MTF_ANALYSIS. When evidence conflicts or is weak, select the stronger direction, lower confidence, and explain the weakness. Derive Entry, SL, TP1 and TP2 from supplied market structure."});
+ const result=await aiDecision({symbol:key,mode:"HOURLY_D1_MTF_ANALYSIS",trigger:"CLOSED_H1",daily:{previousClosedD1:d1,bias:dailyBias},timeframes:{h1:H1.slice(-24),m15:M15.slice(-32),m5:M5.slice(-36)},structure:{h1Direction},technical,technicalScore:techScore,technicalDirection:side,fundamental:{...fund,score:fundamentalScore},weightedScore,thresholds:{minTechnical:minTech,minFinal},weights:{technical:70,fundamental:30},rule:"Analyze exactly once per newly closed H1 and always return one actionable directional entry signal: BUY or SELL. Never return NO_TRADE in HOURLY_D1_MTF_ANALYSIS. When evidence conflicts or is weak, select the stronger direction, lower confidence, and explain the weakness. Derive Entry, SL, TP1 and TP2 from supplied market structure."});
  if(["BUY","SELL"].includes(result.decision)&&[result.entry,result.stopLoss,result.takeProfit1,result.takeProfit2].every(v=>Number.isFinite(Number(v)))){await saveTradeSignal({hourlyId,symbol:key,side:result.decision,entry:+result.entry,stopLoss:+result.stopLoss,tp1:+result.takeProfit1,tp2:+result.takeProfit2,confidence:+result.confidence||null,signalTime:h1Slot.toISOString()})}
  const record={mode:"HOURLY_D1_MTF_ANALYSIS",hourlyId,dailyBias,h1Direction,technicalScore:techScore,fundamentalScore,weightedScore,result,analyzedAt:new Date().toISOString()};
  latest.set(key,record);lastSignal.set(key+":HOURLY",hourlyId);aiRuntime.set(key,{state:result.decision==="NO_TRADE"?"HOURLY_WAIT":"AI_COMPLETED",aiCalled:true,lastAiAt:new Date().toISOString(),lastDecision:result.decision});
