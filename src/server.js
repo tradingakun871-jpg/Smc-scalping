@@ -71,8 +71,7 @@ async function sendTelegramSignal(symbol,record){
  r.invalidation||"—",
  "",
  "Status: AI COMPLETED"
- ].join("
-");
+ ].join("\\n"));
  const resp=await fetch("https://api.telegram.org/bot"+token+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:msg})});
  if(!resp.ok)throw new Error("Telegram HTTP "+resp.status);
  return{sent:true};
