@@ -91,9 +91,11 @@ app.post("/api/mtf/analyze",bridgeAuth,async(req,res)=>{try{
  // Normalize the signal key/time to the CLOSED H1 candle slot, never to M5/request arrival time.
  const h1Slot=new Date(h1CloseTime);h1Slot.setUTCMinutes(0,0,0);
  const hourlyId=key+":"+h1Slot.toISOString();
- const expiredRows=await expirePendingTrades(key,h1Slot);
- for(const ev of expiredRows){try{await sendTelegramLifecycle({event:"FAILED",...ev})}catch(te){console.error("Telegram FAILED failed",te.message)}}
- const expired=expiredRows.length;
+ // Retest signals are structure-lived, not hour-lived.
+ // Do not expire a PENDING signal merely because a new H1 candle has closed.
+ // It remains monitored until entry/TP/SL or an explicit structure/fundamental invalidation rule closes it.
+ const expiredRows=[];
+ const expired=0;
  if(lastSignal.get(key+":HOURLY")===hourlyId || await hasTradeSignal(hourlyId))return res.json({status:"ALREADY_ANALYZED",hourlyId,latest:latest.get(key)||null});
  const dailyBias=d1.close>d1.open?"BUY":d1.close<d1.open?"SELL":"NEUTRAL";
  const h1Direction=+h1Last.close>+h1Prev.high?"BUY":+h1Last.close<+h1Prev.low?"SELL":(+h1Last.close>=+h1Last.open?"BULLISH":"BEARISH");
