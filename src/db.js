@@ -45,3 +45,14 @@ export async function getLearningMemory(symbol,limit=40){
  const r=await pool.query("SELECT hourly_id,regime,strategy,context,outcome,pnl_points,review,created_at,reviewed_at FROM trade_learning WHERE symbol=$1 ORDER BY created_at DESC LIMIT $2",[symbol,Math.max(1,Math.min(100,+limit||40))]);
  return r.rows;
 }
+
+export async function getTradesBetween(symbol,start,end){
+ if(!pool)return[];
+ const r=await pool.query("SELECT hourly_id,symbol,side,entry,stop_loss,tp1,tp2,confidence,signal_time,status,entry_touched,tp1_touched,exit_price,pnl_points,closed_at FROM trade_results WHERE symbol=$1 AND signal_time >= $2::timestamptz AND signal_time < $3::timestamptz ORDER BY signal_time ASC",[symbol,start,end]);
+ return r.rows;
+}
+export async function getLearningSummary(symbol){
+ if(!pool)return[];
+ const r=await pool.query(`SELECT COALESCE(regime,'UNKNOWN') regime,COALESCE(strategy,'UNKNOWN') strategy,COUNT(*)::int samples,COUNT(*) FILTER(WHERE outcome IN ('TP1_REACHED','TP2'))::int wins,COUNT(*) FILTER(WHERE outcome='SL')::int losses,COALESCE(SUM(pnl_points),0)::float pnl_points FROM trade_learning WHERE symbol=$1 AND outcome IS NOT NULL GROUP BY 1,2 ORDER BY samples DESC,pnl_points DESC`,[symbol]);
+ return r.rows.map(x=>({...x,winrate:(x.wins+x.losses)?+(x.wins*100/(x.wins+x.losses)).toFixed(2):0}));
+}
