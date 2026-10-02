@@ -21,3 +21,14 @@ export async function aiDecision(payload){
     throw new Error("AI JSON parse failed: "+e.message);
   }
 }
+export async function reviewTrade(payload){
+ const client=getClient();
+ const response=await client.responses.create({
+  model:process.env.OPENAI_MODEL||"gpt-5.6-luna",
+  instructions:"Anda adalah evaluator trading XAUUSD. Evaluasi hasil trade secara objektif. Jangan menganggap LOSS berarti arah berikutnya harus dibalik dan jangan menganggap WIN berarti strategi selalu benar. Identifikasi marketRegime sebagai TREND, REVERSAL, RANGE, BREAKOUT_HIGH_VOLATILITY, atau MIXED. Identifikasi strategyUsed. Untuk LOSS cari primaryCause dari WRONG_REGIME, AGAINST_STRUCTURE, WEAK_OR_STALE_POI, LATE_CHASING_ENTRY, FALSE_BREAKOUT, VOLATILITY_SHIFT, STOP_PLACEMENT, atau OTHER. Untuk WIN jelaskan successFactors. Kembalikan JSON valid saja dengan keys marketRegime,strategyUsed,grade,primaryCause,whatWorked,whatFailed,lesson,nextTimeAdjustment.",
+  input:"Evaluasi trade berikut dan jadikan pelajaran untuk keputusan berikutnya. JSON only.\n"+JSON.stringify(payload),
+  text:{format:{type:"json_object"}}
+ });
+ const raw=(response.output_text||"").trim(); if(!raw)throw new Error("Trade review empty");
+ return JSON.parse(raw.replace(/^\`\`\`json\s*/i,"").replace(/\`\`\`$/,"").trim());
+}
