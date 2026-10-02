@@ -78,7 +78,7 @@ app.post("/api/mtf/analyze",bridgeAuth,async(req,res)=>{try{
  const {symbol="XAUUSD",previousD1,h1=[],m15=[],m5=[],m3=[],m1=[],fundamental={}}=req.body;
  const key=symbol.toUpperCase();
  if(!previousD1?.time)return res.status(400).json({error:"previousD1 closed candle required"});
- if(!Array.isArray(h1)||!Array.isArray(m15)||!Array.isArray(m5)||!Array.isArray(m3)||!Array.isArray(m1)||h1.length<2||m15.length<4||m5.length<12||m3.length<20||m1.length<30)return res.status(400).json({error:"MTF history insufficient",required:{h1:2,m15:4,m5:12,m3:20,m1:30}});
+ if(!Array.isArray(h1)||!Array.isArray(m15)||!Array.isArray(m5)||!Array.isArray(m3)||!Array.isArray(m1)||h1.length<2||m15.length<4||m5.length<12)return res.status(400).json({error:"MTF history insufficient",required:{h1:2,m15:4,m5:12},optionalExecutionRefinement:{m3:20,m1:30}});
  const normalizeCandle=x=>{if(!x||typeof x!=="object")return null;const time=x.time??x.timestamp??x.datetime;return {...x,time,open:Number(x.open),high:Number(x.high),low:Number(x.low),close:Number(x.close),closed:x.closed!==false}};
  const d1=normalizeCandle(previousD1),H1=h1.map(normalizeCandle),M15=m15.map(normalizeCandle),M5=m5.map(normalizeCandle),M3=m3.map(normalizeCandle),M1=m1.map(normalizeCandle);
  const valid=x=>x&&x.closed&&x.time!=null&&!Number.isNaN(new Date(x.time).getTime())&&[x.open,x.high,x.low,x.close].every(Number.isFinite);
