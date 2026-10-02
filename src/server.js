@@ -94,6 +94,7 @@ app.post("/api/mtf/analyze",bridgeAuth,async(req,res)=>{try{
  if(!Array.isArray(h1)||!Array.isArray(m15)||!Array.isArray(m5)||!Array.isArray(m3)||!Array.isArray(m1)||h1.length<2||m15.length<4||m5.length<12)return res.status(400).json({error:"MTF history insufficient",required:{h1:2,m15:4,m5:12},optionalExecutionRefinement:{m3:20,m1:30}});
  const normalizeCandle=x=>{if(!x||typeof x!=="object")return null;const time=x.time??x.timestamp??x.datetime;return {...x,time,open:Number(x.open),high:Number(x.high),low:Number(x.low),close:Number(x.close),closed:x.closed!==false}};
  const d1=normalizeCandle(previousD1),H1=h1.map(normalizeCandle),M15=m15.map(normalizeCandle),M5=m5.map(normalizeCandle),M3=m3.map(normalizeCandle),M1=m1.map(normalizeCandle);
+ console.log("MTF_PAYLOAD_LENGTHS",JSON.stringify({symbol:key,h1:H1.length,m15:M15.length,m5:M5.length,m3:M3.length,m1:M1.length}));
  const valid=x=>x&&x.closed&&x.time!=null&&!Number.isNaN(new Date(x.time).getTime())&&[x.open,x.high,x.low,x.close].every(Number.isFinite);
  const bad={d1:valid(d1)?0:1,h1:H1.filter(x=>!valid(x)).length,m15:M15.filter(x=>!valid(x)).length,m5:M5.filter(x=>!valid(x)).length,m3:M3.filter(x=>!valid(x)).length,m1:M1.filter(x=>!valid(x)).length};
  if(bad.d1||bad.h1||bad.m15||bad.m5||bad.m3||bad.m1){console.error("MTF_INVALID_PAYLOAD",JSON.stringify({symbol:key,bad,lengths:{h1:H1.length,m15:M15.length,m5:M5.length,m3:M3.length,m1:M1.length}}));return res.status(400).json({error:"Invalid MTF candle payload",bad,lengths:{h1:H1.length,m15:M15.length,m5:M5.length,m3:M3.length,m1:M1.length}})}
