@@ -71,7 +71,8 @@ async function sendTelegramSignal(symbol,record){
  r.invalidation||"—",
  "",
  "Status: AI COMPLETED"
- ].join("\n");
+ ].join("
+");
  const resp=await fetch("https://api.telegram.org/bot"+token+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:msg})});
  if(!resp.ok)throw new Error("Telegram HTTP "+resp.status);
  return{sent:true};
@@ -107,7 +108,8 @@ app.post("/api/learning/bootstrap-4d",bridgeAuth,async(req,res)=>{try{
  }
  res.json({ok:true,period:"2026-09-29..2026-10-02",trades:trades.length,reviewed,skipped,summary:await getLearningSummary(symbol)});
 }catch(e){res.status(500).json({ok:false,error:e.message})}});
-app.get("/api/learning/summary",async(req,res)=>{try{const symbol=String(req.query.symbol||"XAUUSD").toUpperCase();res.json({symbol,summary:await getLearningSummary(symbol)})}catch(e){res.status(500).json({error:e.message})}});\napp.get("/api/trades/journal",async(req,res)=>{try{res.json(await getTradeJournal(String(req.query.symbol||"XAUUSD").toUpperCase(),req.query.period==="monthly"?"monthly":"daily",String(req.query.date||new Date().toISOString().slice(0,10))))}catch(e){res.status(500).json({error:e.message})}});
+app.get("/api/learning/summary",async(req,res)=>{try{const symbol=String(req.query.symbol||"XAUUSD").toUpperCase();res.json({symbol,summary:await getLearningSummary(symbol)})}catch(e){res.status(500).json({error:e.message})}});
+app.get("/api/trades/journal",async(req,res)=>{try{res.json(await getTradeJournal(String(req.query.symbol||"XAUUSD").toUpperCase(),req.query.period==="monthly"?"monthly":"daily",String(req.query.date||new Date().toISOString().slice(0,10))))}catch(e){res.status(500).json({error:e.message})}});
 app.get("/api/trades/stats",async(req,res)=>{try{res.json(await getTradeStats(String(req.query.symbol||"XAUUSD").toUpperCase()))}catch(e){res.status(500).json({error:e.message})}});
 app.get("/api/fundamental",async(req,res)=>{try{res.json(await getFundamental())}catch(e){res.status(503).json({status:"ERROR",error:e.message})}});
 app.post("/api/mt5/heartbeat",bridgeAuth,async(req,res)=>{lastMt5At=Date.now();const key=String(req.body?.symbol||"XAUUSD").toUpperCase();const px=Number(req.body?.price??req.body?.bid??req.body?.last);if(Number.isFinite(px)){livePrice.set(key,{price:px,at:new Date().toISOString()});try{const tradeEvents=await updateOpenTradesFromPrice(key,px);await learnFromClosedTrades(key,tradeEvents)}catch(e){console.error("LIVE trade tracking/db write",e.message)}}let closedM5=(buffers.get(key)||[]).length;try{await touchHeartbeat("MT5");const n=await getCurrentM5Count(key);if(n!=null)closedM5=n}catch(e){console.error("heartbeat db",e.message)}const now=new Date(),expected=Math.floor(now.getUTCMinutes()/5);res.json({status:"ONLINE",serverTime:new Date(lastMt5At).toISOString(),closedM5,expectedClosedM5:expected,resyncRequired:closedM5<expected});});
