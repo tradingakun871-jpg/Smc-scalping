@@ -91,6 +91,22 @@ async function learnFromClosedTrades(symbol,events=[]){
 }
 const noTrade=reason=>({decision:"NO_TRADE",confidence:0,entry:null,stopLoss:null,takeProfit1:null,takeProfit2:null,technicalReason:reason,fundamentalReason:"Not evaluated because mandatory SMC gate failed",invalidation:""});
 app.get("/health",async(req,res)=>{let persistedMt5=null,dbStatus="OFFLINE";try{dbStatus=await checkDb()?"ONLINE":"OFFLINE";persistedMt5=await getHeartbeat("MT5")}catch(e){console.error("heartbeat db read",e.message)}if(persistedMt5)lastMt5At=Math.max(lastMt5At,new Date(persistedMt5).getTime());let fundamentalHealth={status:"ERROR",coverageWeight:0};try{const f=await getFundamental();fundamentalHealth={status:f.status,coverageWeight:f.coverageWeight||0,dxy:f.dxy?"ONLINE":"OFFLINE",yield10y:f.yield10y?"ONLINE":"OFFLINE",calendar:f.calendar?.status==="LIVE"?"ONLINE":"OFFLINE",goldMacro:f.goldMacro?.status==="LIVE"?"ONLINE":"OFFLINE",updatedAt:f.updatedAt};}catch(e){fundamentalHealth.error=e.message;}let openaiStatus="OFFLINE";if(process.env.OPENAI_API_KEY){try{const r=await fetch("https://api.openai.com/v1/models",{headers:{Authorization:"Bearer "+process.env.OPENAI_API_KEY},signal:AbortSignal.timeout(5000)});openaiStatus=r.ok?"ONLINE":"OFFLINE";}catch{openaiStatus="OFFLINE";}}const age=lastMt5At?Date.now()-lastMt5At:null;const mt5Status=age!=null&&age<=7*60*1000?"ONLINE":"OFFLINE";const systemOnline=dbStatus==="ONLINE"&&mt5Status==="ONLINE";res.json({ok:systemOnline,service:"smc-scalping-ai",engine:"D1_BIAS_H1_M15_M5_SMC",bridgeAuth:!!process.env.BRIDGE_TOKEN,minTech,minFinal,connections:{backend:{status:"ONLINE"},database:{status:dbStatus},mt5:{status:mt5Status,lastSeenAt:lastMt5At?new Date(lastMt5At).toISOString():null,ageSeconds:age==null?null:Math.round(age/1000)},openai:{status:openaiStatus},fred:{status:fundamentalHealth.dxy==="ONLINE"&&fundamentalHealth.yield10y==="ONLINE"?"ONLINE":"OFFLINE"}},fundamental:fundamentalHealth});});
+app.post("/api/learning/bootstrap-4d",bridgeAuth,async(req,res)=>{try{
+ const symbol=String(req.body?.symbol||"XAUUSD").toUpperCase();
+ const trades=await getTradesBetween(symbol,"2026-09-29T00:00:00Z","2026-10-03T00:00:00Z");
+ let reviewed=0,skipped=0;
+ for(const t of trades){
+  const outcome=(t.tp1_touched||t.status==="TP1"||t.status==="TP2")?(t.status==="TP2"?"TP2":"TP1_REACHED"):(t.status==="SL"?"SL":null);
+  if(!outcome){skipped++;continue}
+  await saveTradeLearningContext({hourlyId:t.hourly_id,symbol,regime:"HISTORICAL_PENDING_CLASSIFICATION",strategy:"HISTORICAL",context:{bootstrap:true,signalTime:t.signal_time,side:t.side,entry:+t.entry,stopLoss:+t.stop_loss,tp1:+t.tp1,tp2:+t.tp2,confidence:t.confidence,tp1Touched:!!t.tp1_touched}});
+  try{
+   const review=await reviewTrade({period:"2026-09-29..2026-10-02",symbol,hourlyId:t.hourly_id,side:t.side,entry:+t.entry,stopLoss:+t.stop_loss,tp1:+t.tp1,tp2:+t.tp2,confidence:t.confidence,outcome,pnlPoints:+t.pnl_points||0,signalTime:t.signal_time,rule:"TP1 touched counts as WIN."});
+   await saveTradeLearningContext({hourlyId:t.hourly_id,symbol,regime:review.marketRegime||"UNKNOWN",strategy:review.strategyUsed||"UNKNOWN",context:{bootstrap:true,signalTime:t.signal_time,side:t.side,entry:+t.entry,stopLoss:+t.stop_loss,tp1:+t.tp1,tp2:+t.tp2,confidence:t.confidence,tp1Touched:!!t.tp1_touched}});
+   await saveTradeReview(t.hourly_id,outcome,+t.pnl_points||0,{...review,reviewStage:"FOUR_DAY_BOOTSTRAP"});reviewed++;
+  }catch(e){console.error("BOOTSTRAP_REVIEW_ERROR",t.hourly_id,e.message)}
+ }
+ res.json({ok:true,period:"2026-09-29..2026-10-02",trades:trades.length,reviewed,skipped,summary:await getLearningSummary(symbol)});
+}catch(e){res.status(500).json({ok:false,error:e.message})}});
 app.get("/api/learning/summary",async(req,res)=>{try{const symbol=String(req.query.symbol||"XAUUSD").toUpperCase();res.json({symbol,summary:await getLearningSummary(symbol)})}catch(e){res.status(500).json({error:e.message})}});\napp.get("/api/trades/journal",async(req,res)=>{try{res.json(await getTradeJournal(String(req.query.symbol||"XAUUSD").toUpperCase(),req.query.period==="monthly"?"monthly":"daily",String(req.query.date||new Date().toISOString().slice(0,10))))}catch(e){res.status(500).json({error:e.message})}});
 app.get("/api/trades/stats",async(req,res)=>{try{res.json(await getTradeStats(String(req.query.symbol||"XAUUSD").toUpperCase()))}catch(e){res.status(500).json({error:e.message})}});
 app.get("/api/fundamental",async(req,res)=>{try{res.json(await getFundamental())}catch(e){res.status(503).json({status:"ERROR",error:e.message})}});
