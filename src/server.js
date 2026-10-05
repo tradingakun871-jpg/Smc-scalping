@@ -3,7 +3,7 @@ import crypto from "crypto";
 import {analyzeSMC,analyzeRollingM5} from "./smc.js";
 import {aiDecision,reviewTrade} from "./ai.js";
 import {getFundamental} from "./fundamental.js";
-import {initDb,checkDb,touchHeartbeat,getHeartbeat,saveM5Candle,getM5Block,getCurrentM5Count,saveTradeSignal,updateOpenTrades,updateOpenTradesFromPrice,getTradeStats,getTradeJournal,getLatestOpenTrade,hasTradeSignal,normalizeLegacyHourlySignals,getLatestTrade,saveTradeLearningContext,saveTradeReview,getLearningMemory,getTradesBetween,getLearningSummary,evaluatePendingSetups} from "./db.js";
+import {initDb,checkDb,touchHeartbeat,getHeartbeat,saveM5Candle,getM5Block,getCurrentM5Count,saveTradeSignal,updateOpenTrades,updateOpenTradesFromPrice,getTradeStats,getTradeJournal,getLatestOpenTrade,hasTradeSignal,normalizeLegacyHourlySignals,getLatestTrade,saveTradeLearningContext,saveTradeReview,getLearningMemory,getRollingLearningMemory,getTradesBetween,getLearningSummary,evaluatePendingSetups} from "./db.js";
 const app=express();app.use(express.json({limit:"1mb"}));app.use(express.static("public"));
 const buffers=new Map(),lastSignal=new Map(),latest=new Map(),aiRuntime=new Map(),livePrice=new Map(),lastM5Ingest=new Map();let lastMt5At=0;
 const minTech=Number(process.env.MIN_TECHNICAL_SCORE||70),minFinal=Number(process.env.MIN_FINAL_SCORE||70);
@@ -93,10 +93,26 @@ const noTrade=reason=>({decision:"NO_TRADE",confidence:0,entry:null,stopLoss:nul
 function buildAdaptiveProfile(memory=[]){
  const final=memory.filter(x=>["TP1_REACHED","TP1","TP2","SL"].includes(x?.outcome));
  const byStrategy={};
- for(const x of final){const s=String(x.strategy||x.review?.strategyUsed||"UNKNOWN");const z=byStrategy[s]||(byStrategy[s]={samples:0,wins:0,losses:0,pnlPoints:0});z.samples++;if(["TP1_REACHED","TP1","TP2"].includes(x.outcome))z.wins++;if(x.outcome==="SL")z.losses++;z.pnlPoints+=Number(x.pnl_points)||0;}
+ for(const x of final){
+  const s=String(x.strategy||x.review?.strategyUsed||"UNKNOWN");
+  const w=Math.max(0.05,Number(x.learningWeight)||1);
+  const z=byStrategy[s]||(byStrategy[s]={samples:0,effectiveSamples:0,wins:0,losses:0,weightedWins:0,weightedLosses:0,pnlPoints:0,weightedPnlPoints:0});
+  z.samples++;z.effectiveSamples+=w;
+  if(["TP1_REACHED","TP1","TP2"].includes(x.outcome)){z.wins++;z.weightedWins+=w}
+  if(x.outcome==="SL"){z.losses++;z.weightedLosses+=w}
+  z.pnlPoints+=Number(x.pnl_points)||0;z.weightedPnlPoints+=(Number(x.pnl_points)||0)*w;
+ }
  const strategyAdjustments={};
- for(const [s,z] of Object.entries(byStrategy)){const wr=z.samples?z.wins/z.samples:0.5;strategyAdjustments[s]={...z,winRatePct:+(wr*100).toFixed(1),confidenceAdjustment:z.samples>=5?(wr>=0.65?5:wr<0.45?-8:0):0,action:z.samples<5?"OBSERVE":wr>=0.65?"PREFER":wr<0.45?"DEPRIORITIZE":"NEUTRAL"};}
- return {finalSamples:final.length,strategyAdjustments,rule:"Adaptive changes require >=5 finalized samples per strategy. PENDING/CANCELLED never affect winrate/PF. Prefer proven strategies and deprioritize weak ones, but never override structural safety, Web1 SL 30-50 pips, TP1=1R, TP2=2R, or one-signal-per-H1."};
+ for(const [s,z] of Object.entries(byStrategy)){
+  const denom=z.weightedWins+z.weightedLosses;
+  const wr=denom?z.weightedWins/denom:0.5;
+  const enough=z.samples>=5;
+  strategyAdjustments[s]={...z,effectiveSamples:+z.effectiveSamples.toFixed(2),weightedPnlPoints:+z.weightedPnlPoints.toFixed(3),winRatePct:+(wr*100).toFixed(1),confidenceAdjustment:enough?(wr>=0.65?5:wr<0.45?-8:0):0,action:!enough?"OBSERVE":wr>=0.65?"PREFER":wr<0.45?"DEPRIORITIZE":"NEUTRAL"};
+ }
+ const n=final.length;
+ const checkpoint=n>=200?200:n>=100?100:n>=50?50:n>=20?20:0;
+ const nextCheckpoint=n<20?20:n<50?50:n<100?100:n<200?200:null;
+ return {finalSamples:n,checkpoint,nextCheckpoint,historyWindowDays:7,timeDecay:"half-life-2d",regimeAware:true,strategyAdjustments,rule:"Continuous learning uses finalized trades from today first and can extend through the previous 7 days. Newer trades have higher time-decay weight and matching market regimes receive extra weight. Checkpoints 20/50/100/200 control adaptation confidence. PENDING/CANCELLED never affect winrate/PF. Never override structural safety, Web1 SL 30-50 pips, TP1=1R, TP2=2R, or one-signal-per-H1."};
 }
 app.get("/health",async(req,res)=>{let persistedMt5=null,dbStatus="OFFLINE";try{dbStatus=await checkDb()?"ONLINE":"OFFLINE";persistedMt5=await getHeartbeat("MT5")}catch(e){console.error("heartbeat db read",e.message)}if(persistedMt5)lastMt5At=Math.max(lastMt5At,new Date(persistedMt5).getTime());let fundamentalHealth={status:"ERROR",coverageWeight:0};try{const f=await getFundamental();fundamentalHealth={status:f.status,coverageWeight:f.coverageWeight||0,dxy:f.dxy?"ONLINE":"OFFLINE",yield10y:f.yield10y?"ONLINE":"OFFLINE",calendar:f.calendar?.status==="LIVE"?"ONLINE":"OFFLINE",goldMacro:f.goldMacro?.status==="LIVE"?"ONLINE":"OFFLINE",updatedAt:f.updatedAt};}catch(e){fundamentalHealth.error=e.message;}let openaiStatus="OFFLINE";if(process.env.OPENAI_API_KEY){try{const r=await fetch("https://api.openai.com/v1/models",{headers:{Authorization:"Bearer "+process.env.OPENAI_API_KEY},signal:AbortSignal.timeout(5000)});openaiStatus=r.ok?"ONLINE":"OFFLINE";}catch{openaiStatus="OFFLINE";}}const age=lastMt5At?Date.now()-lastMt5At:null;const mt5Status=age!=null&&age<=7*60*1000?"ONLINE":"OFFLINE";const systemOnline=dbStatus==="ONLINE"&&mt5Status==="ONLINE";res.json({ok:systemOnline,service:"smc-scalping-ai",engine:"D1_BIAS_H1_M15_M5_SMC",bridgeAuth:!!process.env.BRIDGE_TOKEN,minTech,minFinal,connections:{backend:{status:"ONLINE"},database:{status:dbStatus},mt5:{status:mt5Status,lastSeenAt:lastMt5At?new Date(lastMt5At).toISOString():null,ageSeconds:age==null?null:Math.round(age/1000)},openai:{status:openaiStatus},fred:{status:fundamentalHealth.dxy==="ONLINE"&&fundamentalHealth.yield10y==="ONLINE"?"ONLINE":"OFFLINE"}},fundamental:fundamentalHealth});});
 app.post("/api/learning/bootstrap-4d",bridgeAuth,async(req,res)=>{try{
@@ -151,7 +167,12 @@ app.post("/api/mtf/analyze",bridgeAuth,async(req,res)=>{try{
  const fundamentalScore=Number.isFinite(Number(fund.score))?Number(fund.score):null;
  const weightedScore=fundamentalScore==null?+(techScore*.7).toFixed(2):+(techScore*.7+fundamentalScore*.3).toFixed(2);
  const px=Number(livePrice.get(key)?.price);if(Number.isFinite(px)){const pendingEvents=await evaluatePendingSetups(key,px).catch(()=>[]);for(const t of pendingEvents){await saveTradeReview(t.hourly_id,"CANCELLED",0,{reviewStage:"PENDING_FINAL",primaryCause:t.lifecycle_reason,lesson:"Untouched setup invalidated or target reached before entry; use this to improve entry reachability, but exclude from winrate/PnL."}).catch(()=>{});console.log("PENDING_SETUP_CANCELLED",key,t.hourly_id,t.lifecycle_reason)}}
- const learningMemory=await getLearningMemory(key,40).catch(()=>[]);
+ // Bootstrap from recent finalized outcomes: today first, then up to 7 days.
+ // The DB attaches time-decay weights; after a preliminary profile we re-rank
+ // same-regime examples so current market conditions matter more than stale history.
+ let learningMemory=await getRollingLearningMemory(key,{minSamples:20,maxDays:7,limit:200}).catch(()=>[]);
+ const recentRegime=learningMemory.find(x=>x?.regime&&x.regime!=="UNKNOWN")?.regime||null;
+ if(recentRegime)learningMemory=await getRollingLearningMemory(key,{minSamples:20,maxDays:7,limit:200,currentRegime:recentRegime}).catch(()=>learningMemory);
 const adaptiveProfile=buildAdaptiveProfile(learningMemory);
 console.log("AI_ADAPTIVE_PROFILE",JSON.stringify({symbol:key,hourlyId,...adaptiveProfile}));
  const result=await aiDecision({symbol:key,mode:"HOURLY_D1_MTF_ANALYSIS",trigger:"CLOSED_H1",daily:{previousClosedD1:d1,bias:dailyBias},timeframes:{h1:H1.slice(-24),m15:M15.slice(-32),m5:M5.slice(-36),m3:M3.slice(-60),m1:M1.slice(-90)},structure:{h1Direction},technical,technicalScore:techScore,technicalDirection:side,fundamental:{...fund,score:fundamentalScore},weightedScore,thresholds:{minTechnical:minTech,minFinal},weights:{technical:70,fundamental:30},learningMemory,adaptiveProfile,rule:"Analyze exactly once per newly closed H1. For Web 1, select ONE best available structurally valid BUY/SELL setup per H1 using learningMemory plus live H1/M15 and M5/M3/M1 evidence. Rank POI, ENGULFING_DIRECT, BREAKOUT_DIRECT, BREAKOUT_RETEST and BREAKOUT_CONTINUATION candidates; do not reject solely on a fixed confidence threshold. NO_TRADE is only a final safety exception when no candidate has valid structure and a 30-50 pip structural stop. Return BUY or SELL only when the setup is high quality; otherwise return NO_TRADE. A trade requires coherent H1/M15 direction plus a valid M5/M3/M1 execution trigger: (1) fresh reachable POI from Supply/Demand, strong SNR, OB or FVG with displacement/rejection/sweep evidence, OR (2) strong ENGULFING_DIRECT at meaningful structure, OR (3) confirmed breakout close/retest/continuation with displacement. Prefer at least two confluences. When H1/M15 conflict or the primary POI is stale, continue ranking the remaining M5/M3/M1 candidates and select the safest structurally valid alternative. Reject wick-only/chasing candidates, but for HOURLY mode do not stop searching until POI, ENGULFING_DIRECT, BREAKOUT_DIRECT, BREAKOUT_RETEST and BREAKOUT_CONTINUATION have all been evaluated. NO_TRADE is permitted only when every candidate fails structural safety or no 30-50 pip structural invalidation exists. For XAUUSD Web 1, derive SL from the nearest valid structural invalidation/POI/swing and require Entry-to-SL distance of 30-50 pips (3.00-5.00 price units). BUY SL must be below entry; SELL SL must be above entry. Never use less than 30 or more than 50 pips. Derive TP1=1R and TP2=2R from the actual final Entry-to-SL distance."});
