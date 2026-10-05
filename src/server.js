@@ -78,7 +78,7 @@ async function sendTelegramSignal(symbol,record){
 }
 async function learnFromClosedTrades(symbol,events=[]){
  for(const t of events){
-  if(!["TP1_REACHED","TP1_BE","TP2","SL"].includes(t?.status))continue;
+  if(!["TP1_REACHED","TP1_BE","TP2","TP2_RUNNER_PROTECTED","TP3_RUNNER","SL"].includes(t?.status))continue;
   try{
    const memory=await getLearningMemory(symbol,100);
    const prior=memory.find(x=>x.hourly_id===t.hourly_id);
@@ -91,9 +91,9 @@ async function learnFromClosedTrades(symbol,events=[]){
 }
 const noTrade=reason=>({decision:"NO_TRADE",confidence:0,entry:null,stopLoss:null,takeProfit1:null,takeProfit2:null,technicalReason:reason,fundamentalReason:"Not evaluated because mandatory SMC gate failed",invalidation:""});
 function buildAdaptiveProfile(memory=[]){
- const final=memory.filter(x=>["TP1_REACHED","TP1","TP1_BE","TP2","SL"].includes(x?.outcome));
+ const final=memory.filter(x=>["TP1_REACHED","TP1","TP1_BE","TP2","TP2_RUNNER_PROTECTED","TP3_RUNNER","SL"].includes(x?.outcome));
  const byStrategy={};
- for(const x of final){const s=String(x.strategy||x.review?.strategyUsed||"UNKNOWN");const z=byStrategy[s]||(byStrategy[s]={samples:0,wins:0,losses:0,pnlPoints:0});z.samples++;if(["TP1_REACHED","TP1","TP1_BE","TP2"].includes(x.outcome))z.wins++;if(x.outcome==="SL")z.losses++;z.pnlPoints+=Number(x.pnl_points)||0;}
+ for(const x of final){const s=String(x.strategy||x.review?.strategyUsed||"UNKNOWN");const z=byStrategy[s]||(byStrategy[s]={samples:0,wins:0,losses:0,pnlPoints:0});z.samples++;if(["TP1_REACHED","TP1","TP1_BE","TP2","TP2_RUNNER_PROTECTED","TP3_RUNNER"].includes(x.outcome))z.wins++;if(x.outcome==="SL")z.losses++;z.pnlPoints+=Number(x.pnl_points)||0;}
  const strategyAdjustments={};
  for(const [s,z] of Object.entries(byStrategy)){const wr=z.samples?z.wins/z.samples:0.5;strategyAdjustments[s]={...z,winRatePct:+(wr*100).toFixed(1),confidenceAdjustment:z.samples>=5?(wr>=0.65?5:wr<0.45?-8:0):0,action:z.samples<5?"OBSERVE":wr>=0.65?"PREFER":wr<0.45?"DEPRIORITIZE":"NEUTRAL"};}
  return {finalSamples:final.length,strategyAdjustments,rule:"Adaptive changes require >=5 finalized samples per strategy. PENDING/CANCELLED never affect winrate/PF. Prefer proven strategies and deprioritize weak ones, but never override structural safety, Web1 SL 30-50 pips, TP1=1R, TP2=2R, or one-signal-per-H1."};
