@@ -69,16 +69,18 @@ export async function evaluatePendingSetups(symbol,price){
  for(const t of r.rows){
   const entry=+t.entry,sl=+t.stop_loss,tp1=+t.tp1,tp2=+t.tp2;
   let cancelReason=null;
-  // If price reaches a target before ever touching entry, the original limit setup is no longer valid.
-  if(t.side==='BUY' && px>=tp1)cancelReason='TARGET_REACHED_BEFORE_ENTRY';
-  if(t.side==='SELL' && px<=tp1)cancelReason='TARGET_REACHED_BEFORE_ENTRY';
+  // Passing TP1 before entry requires re-evaluation; do not auto-cancel.
+  const targetPassed=(t.side==='BUY' && px>=tp1)||(t.side==='SELL' && px<=tp1);
+  if(targetPassed){
+   await pool.query("UPDATE trade_results SET lifecycle_status='PENDING',lifecycle_reason='TARGET_PASSED_REVIEW_REQUIRED',lifecycle_updated_at=NOW() WHERE hourly_id=$1 AND entry_touched=FALSE AND status='OPEN'",[t.hourly_id]);
+  }
   // If price crosses structural invalidation before entry, cancel the untouched setup.
   if(t.side==='BUY' && px<=sl)cancelReason='STRUCTURE_INVALIDATED_BEFORE_ENTRY';
   if(t.side==='SELL' && px>=sl)cancelReason='STRUCTURE_INVALIDATED_BEFORE_ENTRY';
   if(cancelReason){
    await pool.query("UPDATE trade_results SET status='CANCELLED',lifecycle_status='CANCELLED',lifecycle_reason=$2,lifecycle_updated_at=NOW(),closed_at=NOW(),pnl_points=0 WHERE hourly_id=$1 AND entry_touched=FALSE AND status='OPEN'",[t.hourly_id,cancelReason]);
    events.push({...t,status:'CANCELLED',lifecycle_status:'CANCELLED',lifecycle_reason:cancelReason});
-  }else{
+  }else if(!targetPassed){
    await pool.query("UPDATE trade_results SET lifecycle_status='PENDING',lifecycle_reason='STILL_REACHABLE',lifecycle_updated_at=NOW() WHERE hourly_id=$1 AND entry_touched=FALSE",[t.hourly_id]);
   }
  }
