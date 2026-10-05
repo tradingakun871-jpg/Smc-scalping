@@ -50,6 +50,37 @@ export async function getLearningMemory(symbol,limit=40){
  return r.rows;
 }
 
+// Rolling adaptive memory: use finalized history from today first, then automatically
+// extend backwards up to 7 days when the current-day sample is still thin.
+// Newer outcomes carry more weight, and matching regimes receive an extra boost.
+export async function getRollingLearningMemory(symbol,{minSamples=20,maxDays=7,limit=200,currentRegime=null}={}){
+ if(!pool)return[];
+ const days=Math.max(1,Math.min(7,+maxDays||7));
+ const min=Math.max(1,+minSamples||20);
+ const cap=Math.max(min,Math.min(500,+limit||200));
+ const r=await pool.query(`
+  SELECT hourly_id,regime,strategy,context,outcome,pnl_points,review,created_at,reviewed_at,
+         GREATEST(0,EXTRACT(EPOCH FROM (NOW()-COALESCE(reviewed_at,created_at)))/86400.0) AS age_days
+  FROM trade_learning
+  WHERE symbol=$1
+    AND outcome IN ('TP1_REACHED','TP1','TP2','SL')
+    AND COALESCE(reviewed_at,created_at) >= NOW()-($2::text||' days')::interval
+  ORDER BY COALESCE(reviewed_at,created_at) DESC
+  LIMIT $3`,[symbol,String(days),cap]);
+ const rows=r.rows.map(x=>{
+  const age=Math.max(0,Number(x.age_days)||0);
+  // Half-life ~= 2 days: today dominates, but one-week history can bootstrap learning.
+  const timeWeight=Math.pow(0.5,age/2);
+  const regimeMatch=currentRegime&&String(currentRegime)!=="UNKNOWN"&&String(x.regime)===String(currentRegime);
+  const regimeWeight=regimeMatch?1.20:1.00;
+  return {...x,ageDays:+age.toFixed(3),timeWeight:+timeWeight.toFixed(4),regimeWeight,learningWeight:+(timeWeight*regimeWeight).toFixed(4)};
+ });
+ // Keep all available current/recent samples up to the cap. minSamples is metadata for
+ // checkpoint confidence; it must never fabricate or duplicate historical trades.
+ rows.minSamplesTarget=min;
+ return rows;
+}
+
 export async function getTradesBetween(symbol,start,end){
  if(!pool)return[];
  const r=await pool.query("SELECT hourly_id,symbol,side,entry,stop_loss,tp1,tp2,confidence,signal_time,status,entry_touched,tp1_touched,exit_price,pnl_points,closed_at FROM trade_results WHERE symbol=$1 AND signal_time >= $2::timestamptz AND signal_time < $3::timestamptz ORDER BY signal_time ASC",[symbol,start,end]);
