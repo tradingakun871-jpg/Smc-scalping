@@ -183,7 +183,8 @@ export async function evaluatePendingSetups(symbol,price){
    const reviewAgeMs=updatedAt?Date.now()-updatedAt:Number.POSITIVE_INFINITY;
    const alreadyQueued=currentReason==="TARGET_PASSED_REVIEW_REQUIRED";
    const aiKept=currentReason.startsWith("AI_REVIEW_VALID");
-   const reviewDue=!alreadyQueued && (!aiKept || reviewAgeMs>=5*60*1000);
+   // Retry a stuck/failed AI review after 60s; successfully kept setups are rechecked every 5m.
+   const reviewDue=(alreadyQueued && reviewAgeMs>=60*1000) || (!alreadyQueued && (!aiKept || reviewAgeMs>=5*60*1000));
    if(reviewDue){
     await pool.query("UPDATE trade_results SET lifecycle_status='PENDING',lifecycle_reason='TARGET_PASSED_REVIEW_REQUIRED',lifecycle_updated_at=NOW() WHERE hourly_id=$1 AND entry_touched=FALSE AND status='OPEN'",[t.hourly_id]);
     events.push({...t,status:"REVIEW_REQUIRED",lifecycle_status:"PENDING",lifecycle_reason:"TARGET_PASSED_REVIEW_REQUIRED",review_price:px});
