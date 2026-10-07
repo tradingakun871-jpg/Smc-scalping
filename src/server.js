@@ -3,7 +3,7 @@ import crypto from "crypto";
 import {analyzeSMC,analyzeRollingM5} from "./smc.js";
 import {aiDecision,reviewTrade,reviewPendingSetup} from "./ai.js";
 import {getFundamental} from "./fundamental.js";
-import {initDb,checkDb,touchHeartbeat,getHeartbeat,saveM5Candle,getM5Block,getCurrentM5Count,saveMtfCandles,getHistoricalCandles,saveTradeSignal,updateOpenTrades,updateOpenTradesFromPrice,getTradeStats,getTradeJournal,getLatestOpenTrade,hasTradeSignal,hasHourlyAnalysis,saveHourlyAnalysis,normalizeLegacyHourlySignals,getLatestTrade,saveTradeLearningContext,saveTradeReview,getLearningMemory,getRollingLearningMemory,getLongTermLearningMemory,getCancelledLearningMemory,getTradesBetween,getLearningSummary,evaluatePendingSetups,resolvePendingSetupReview} from "./db.js";
+import {initDb,checkDb,touchHeartbeat,getHeartbeat,saveM5Candle,getM5Block,getCurrentM5Count,saveMtfCandles,getHistoricalCandles,saveTradeSignal,updateOpenTrades,updateOpenTradesFromPrice,getTradeStats,getTradeJournal,getLatestOpenTrade,hasTradeSignal,hasHourlyAnalysis,saveHourlyAnalysis,normalizeLegacyHourlySignals,getLatestTrade,saveTradeLearningContext,saveTradeReview,getLearningMemory,getRollingLearningMemory,getLongTermLearningMemory,getCancelledLearningMemory,getTradesBetween,getLearningSummary,cancelPendingAtMarketClose,evaluatePendingSetups,resolvePendingSetupReview} from "./db.js";
 const app=express();app.use(express.json({limit:"1mb"}));app.use(express.static("public"));
 const buffers=new Map(),lastSignal=new Map(),latest=new Map(),aiRuntime=new Map(),livePrice=new Map(),lastM5Ingest=new Map();let lastMt5At=0;
 const minTech=Number(process.env.MIN_TECHNICAL_SCORE||70),minFinal=Number(process.env.MIN_FINAL_SCORE||70);
@@ -93,7 +93,7 @@ async function sendTelegramLifecycle(symbol,t,review=null){
 async function handlePendingSetupEvents(symbol,events=[]){
  for(const t of events){
   if(t?.status==="CANCELLED"){
-   await saveTradeReview(t.hourly_id,"CANCELLED",0,{reviewStage:"PENDING_FINAL",primaryCause:t.lifecycle_reason,lesson:"Setup belum entry dan dibatalkan karena expiry/invalidation. Tidak dihitung WIN/LOSS."}).catch(()=>{});
+   await saveTradeReview(t.hourly_id,"CANCELLED",0,{reviewStage:"PENDING_FINAL",primaryCause:t.lifecycle_reason,lesson:t.lifecycle_reason==="MARKET_CLOSED_PENDING_CANCELLED"?"Setup masih pending saat market close sehingga dibatalkan. Gunakan sebagai quality-learning untuk menilai reachability/timing; tidak dihitung WIN/LOSS.":"Setup belum entry dan dibatalkan karena expiry/invalidation. Tidak dihitung WIN/LOSS."}).catch(()=>{});
    console.log("PENDING_SETUP_CANCELLED",symbol,t.hourly_id,t.lifecycle_reason);
    try{await sendTelegramLifecycle(symbol,t)}catch(te){console.error("Telegram cancel update failed",te.message)}
    continue;
@@ -483,4 +483,26 @@ initDb().then(async()=>{
   }));
  }catch(e){console.error("LEARNING_BOOTSTRAP_ERROR",e.message)}
 }).catch(e=>console.error("Database init failed",e.message));
+let lastMarketCloseSweepKey=null;
+async function sweepMarketClosePending(){
+ const now=new Date();
+ if(now.getUTCHours()!==21)return;
+ const key=now.toISOString().slice(0,13);
+ if(lastMarketCloseSweepKey===key)return;
+ lastMarketCloseSweepKey=key;
+ try{
+  const cancelled=await cancelPendingAtMarketClose("XAUUSD",now);
+  if(cancelled.length){
+   console.log("MARKET_CLOSE_PENDING_CANCELLED",JSON.stringify({count:cancelled.length,hourUtc:key}));
+   await handlePendingSetupEvents("XAUUSD",cancelled);
+  }else{
+   console.log("MARKET_CLOSE_PENDING_SWEEP_OK",JSON.stringify({count:0,hourUtc:key}));
+  }
+ }catch(e){
+  lastMarketCloseSweepKey=null;
+  console.error("MARKET_CLOSE_PENDING_SWEEP_ERROR",e.message);
+ }
+}
+setInterval(sweepMarketClosePending,30000);
+setTimeout(sweepMarketClosePending,3000);
 app.listen(port,()=>console.log("SMC AI listening on",port));
