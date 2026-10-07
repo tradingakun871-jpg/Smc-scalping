@@ -157,27 +157,60 @@ export async function evaluatePendingSetups(symbol,price){
  const r=await pool.query("SELECT * FROM trade_results WHERE symbol=$1 AND status='OPEN' AND entry_touched=FALSE AND lifecycle_status<>'CANCELLED' ORDER BY signal_time",[symbol]);
  const events=[];
  for(const t of r.rows){
-  const entry=+t.entry,sl=+t.stop_loss,tp1=+t.tp1,tp2=+t.tp2;
+  const entry=+t.entry,sl=+t.stop_loss,tp1=+t.tp1;
   let cancelReason=null;
-  // Untouched setups expire when the Jakarta/WIB calendar day changes.
-  // They must never remain eligible for entry on the following day.
   const signalDayWib=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Jakarta",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date(t.signal_time));
   const todayWib=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Jakarta",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
-  if(signalDayWib!==todayWib)cancelReason='EXPIRED_NEW_DAY_BEFORE_ENTRY';
-  // Passing TP1 before entry requires re-evaluation; do not auto-cancel.
-  const targetPassed=(t.side==='BUY' && px>=tp1)||(t.side==='SELL' && px<=tp1);
-  if(targetPassed){
-   await pool.query("UPDATE trade_results SET lifecycle_status='PENDING',lifecycle_reason='TARGET_PASSED_REVIEW_REQUIRED',lifecycle_updated_at=NOW() WHERE hourly_id=$1 AND entry_touched=FALSE AND status='OPEN'",[t.hourly_id]);
-  }
-  // If price crosses structural invalidation before entry, cancel the untouched setup.
-  if(!cancelReason && t.side==='BUY' && px<=sl)cancelReason='STRUCTURE_INVALIDATED_BEFORE_ENTRY';
-  if(!cancelReason && t.side==='SELL' && px>=sl)cancelReason='STRUCTURE_INVALIDATED_BEFORE_ENTRY';
+  if(signalDayWib!==todayWib)cancelReason="EXPIRED_NEW_DAY_BEFORE_ENTRY";
+
+  if(!cancelReason && t.side==="BUY" && px<=sl)cancelReason="STRUCTURE_INVALIDATED_BEFORE_ENTRY";
+  if(!cancelReason && t.side==="SELL" && px>=sl)cancelReason="STRUCTURE_INVALIDATED_BEFORE_ENTRY";
+
   if(cancelReason){
    await pool.query("UPDATE trade_results SET status='CANCELLED',lifecycle_status='CANCELLED',lifecycle_reason=$2,lifecycle_updated_at=NOW(),closed_at=NOW(),pnl_points=0 WHERE hourly_id=$1 AND entry_touched=FALSE AND status='OPEN'",[t.hourly_id,cancelReason]);
-   events.push({...t,status:'CANCELLED',lifecycle_status:'CANCELLED',lifecycle_reason:cancelReason});
-  }else if(!targetPassed){
-   await pool.query("UPDATE trade_results SET lifecycle_status='PENDING',lifecycle_reason='STILL_REACHABLE',lifecycle_updated_at=NOW() WHERE hourly_id=$1 AND entry_touched=FALSE",[t.hourly_id]);
+   events.push({...t,status:"CANCELLED",lifecycle_status:"CANCELLED",lifecycle_reason:cancelReason});
+   continue;
+  }
+
+  // If TP1 is passed before entry, the original setup may be stale/overextended.
+  // Ask AI to revalidate it instead of leaving TARGET_PASSED_REVIEW_REQUIRED hanging.
+  // A setup previously kept by AI is reviewed again no more than once per 5 minutes
+  // while price remains beyond TP1, so changing market conditions can still cancel it.
+  const targetPassed=(t.side==="BUY" && px>=tp1)||(t.side==="SELL" && px<=tp1);
+  if(targetPassed){
+   const currentReason=String(t.lifecycle_reason||"");
+   const updatedAt=t.lifecycle_updated_at?new Date(t.lifecycle_updated_at).getTime():0;
+   const reviewAgeMs=updatedAt?Date.now()-updatedAt:Number.POSITIVE_INFINITY;
+   const alreadyQueued=currentReason==="TARGET_PASSED_REVIEW_REQUIRED";
+   const aiKept=currentReason.startsWith("AI_REVIEW_VALID");
+   const reviewDue=!alreadyQueued && (!aiKept || reviewAgeMs>=5*60*1000);
+   if(reviewDue){
+    await pool.query("UPDATE trade_results SET lifecycle_status='PENDING',lifecycle_reason='TARGET_PASSED_REVIEW_REQUIRED',lifecycle_updated_at=NOW() WHERE hourly_id=$1 AND entry_touched=FALSE AND status='OPEN'",[t.hourly_id]);
+    events.push({...t,status:"REVIEW_REQUIRED",lifecycle_status:"PENDING",lifecycle_reason:"TARGET_PASSED_REVIEW_REQUIRED",review_price:px});
+   }
+   continue;
+  }
+
+  if(String(t.lifecycle_reason||"")!=="STILL_REACHABLE"){
+   await pool.query("UPDATE trade_results SET lifecycle_status='PENDING',lifecycle_reason='STILL_REACHABLE',lifecycle_updated_at=NOW() WHERE hourly_id=$1 AND entry_touched=FALSE AND status='OPEN'",[t.hourly_id]);
   }
  }
  return events;
+}
+
+export async function resolvePendingSetupReview(hourlyId,resolution,{probability=null,reason=null}={}){
+ if(!pool)return null;
+ const r=await pool.query("SELECT * FROM trade_results WHERE hourly_id=$1 LIMIT 1",[hourlyId]);
+ const t=r.rows[0]; if(!t||t.status!=="OPEN"||t.entry_touched)return t||null;
+ const keep=String(resolution).toUpperCase()==="KEEP";
+ const prob=Number.isFinite(Number(probability))?Math.round(Number(probability)):null;
+ const cleanReason=String(reason||"").replace(/[^A-Z0-9_]/gi,"_").slice(0,80).toUpperCase();
+ if(keep){
+  const lifecycleReason="AI_REVIEW_VALID_HIGH_PROBABILITY"+(prob!=null?"_"+prob:"");
+  const q=await pool.query("UPDATE trade_results SET lifecycle_status='PENDING',lifecycle_reason=$2,lifecycle_updated_at=NOW() WHERE hourly_id=$1 AND status='OPEN' AND entry_touched=FALSE RETURNING *",[hourlyId,lifecycleReason]);
+  return q.rows[0]||t;
+ }
+ const lifecycleReason="AI_REVIEW_CANCELLED_"+(cleanReason||"STALE_OR_LOW_PROBABILITY")+(prob!=null?"_"+prob:"");
+ const q=await pool.query("UPDATE trade_results SET status='CANCELLED',lifecycle_status='CANCELLED',lifecycle_reason=$2,lifecycle_updated_at=NOW(),closed_at=NOW(),pnl_points=0 WHERE hourly_id=$1 AND status='OPEN' AND entry_touched=FALSE RETURNING *",[hourlyId,lifecycleReason]);
+ return q.rows[0]||t;
 }
