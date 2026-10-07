@@ -90,13 +90,15 @@ export async function getRollingLearningMemory(symbol,{minSamples=20,maxDays=7,l
  const min=Math.max(1,+minSamples||20);
  const cap=Math.max(min,Math.min(500,+limit||200));
  const r=await pool.query(`
-  SELECT hourly_id,regime,strategy,context,outcome,pnl_points,review,created_at,reviewed_at,
-         GREATEST(0,EXTRACT(EPOCH FROM (NOW()-COALESCE(reviewed_at,created_at)))/86400.0) AS age_days
-  FROM trade_learning
-  WHERE symbol=$1
-    AND outcome IN ('TP1_REACHED','TP1','TP2','SL')
-    AND COALESCE(reviewed_at,created_at) >= NOW()-($2::text||' days')::interval
-  ORDER BY COALESCE(reviewed_at,created_at) DESC
+  SELECT l.hourly_id,l.regime,l.strategy,l.context,l.outcome,l.pnl_points,l.review,l.created_at,l.reviewed_at,
+         t.side,t.entry,t.stop_loss,t.tp1,t.tp2,t.confidence,t.signal_time,t.closed_at,
+         GREATEST(0,EXTRACT(EPOCH FROM (NOW()-COALESCE(l.reviewed_at,l.created_at)))/86400.0) AS age_days
+  FROM trade_learning l
+  JOIN trade_results t ON t.hourly_id=l.hourly_id
+  WHERE l.symbol=$1
+    AND l.outcome IN ('TP1_REACHED','TP1','TP2','SL')
+    AND COALESCE(l.reviewed_at,l.created_at) >= NOW()-($2::text||' days')::interval
+  ORDER BY COALESCE(l.reviewed_at,l.created_at) DESC
   LIMIT $3`,[symbol,String(days),cap]);
  const rows=r.rows.map(x=>{
   const age=Math.max(0,Number(x.age_days)||0);
