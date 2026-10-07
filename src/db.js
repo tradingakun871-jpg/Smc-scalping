@@ -19,6 +19,9 @@ await pool.query(`CREATE TABLE IF NOT EXISTS trade_learning (
  reviewed_at TIMESTAMPTZ
 )`);
 await pool.query("CREATE INDEX IF NOT EXISTS idx_trade_learning_symbol_created ON trade_learning(symbol,created_at DESC)");
+await pool.query("CREATE TABLE IF NOT EXISTS hourly_analysis (hourly_id TEXT PRIMARY KEY,symbol TEXT NOT NULL,decision TEXT NOT NULL,analyzed_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
+await pool.query("CREATE INDEX IF NOT EXISTS idx_hourly_analysis_symbol_time ON hourly_analysis(symbol,analyzed_at DESC)");
+await pool.query("INSERT INTO hourly_analysis(hourly_id,symbol,decision,analyzed_at) SELECT hourly_id,symbol,side,COALESCE(created_at,NOW()) FROM trade_results ON CONFLICT(hourly_id) DO NOTHING");
 await pool.query("UPDATE trade_learning l SET outcome=t.status,pnl_points=COALESCE(t.pnl_points,0) FROM trade_results t WHERE t.hourly_id=l.hourly_id AND t.status IN ('TP1','TP2','SL') AND (l.outcome IS DISTINCT FROM t.status OR l.pnl_points IS DISTINCT FROM COALESCE(t.pnl_points,0))");
 return true}
 export async function saveTradeSignal(t){if(!pool)return false;await pool.query("INSERT INTO trade_results(hourly_id,symbol,side,entry,stop_loss,tp1,tp2,confidence,signal_time) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(hourly_id) DO NOTHING",[t.hourlyId,t.symbol,t.side,t.entry,t.stopLoss,t.tp1,t.tp2,t.confidence??null,t.signalTime]);return true}
@@ -183,6 +186,9 @@ export async function getLatestOpenTrade(symbol){
  const r=await pool.query("SELECT hourly_id,symbol,side,entry,stop_loss,tp1,tp2,confidence,signal_time,status,entry_touched,tp1_touched,lifecycle_status,lifecycle_reason,lifecycle_updated_at FROM trade_results WHERE symbol=$1 AND status='OPEN' AND lifecycle_status<>'CANCELLED' ORDER BY signal_time DESC,created_at DESC LIMIT 1",[symbol]);
  return r.rows[0]||null;
 }
+export async function hasHourlyAnalysis(hourlyId){if(!pool)return false;const r=await pool.query("SELECT 1 FROM hourly_analysis WHERE hourly_id=$1 LIMIT 1",[hourlyId]);return r.rowCount>0}
+export async function saveHourlyAnalysis({hourlyId,symbol,decision}){if(!pool)return false;const r=await pool.query("INSERT INTO hourly_analysis(hourly_id,symbol,decision) VALUES($1,$2,$3) ON CONFLICT(hourly_id) DO NOTHING",[hourlyId,symbol,decision||"NO_TRADE"]);return r.rowCount>0}
+
 export async function hasTradeSignal(hourlyId){if(!pool)return false;const r=await pool.query("SELECT 1 FROM trade_results WHERE hourly_id=$1 LIMIT 1",[hourlyId]);return r.rowCount>0}
 export async function normalizeLegacyHourlySignals(symbol){if(!pool)return 0;const r=await pool.query("SELECT hourly_id,signal_time FROM trade_results WHERE symbol=$1 ORDER BY signal_time",[symbol]);let changed=0;for(const t of r.rows){const slot=new Date(t.signal_time);if(slot.getUTCMinutes()===0&&slot.getUTCSeconds()===0)continue;slot.setUTCMinutes(0,0,0);const newId=symbol+":"+slot.toISOString();const exists=await pool.query("SELECT 1 FROM trade_results WHERE hourly_id=$1",[newId]);if(exists.rowCount){await pool.query("DELETE FROM trade_results WHERE hourly_id=$1",[t.hourly_id])}else{await pool.query("UPDATE trade_results SET hourly_id=$2,signal_time=$3 WHERE hourly_id=$1",[t.hourly_id,newId,slot.toISOString()])}changed++}return changed}
 
