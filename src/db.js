@@ -361,9 +361,9 @@ export async function evaluatePendingSetups(symbol,price){
  for(const t of r.rows){
   const entry=+t.entry,sl=+t.stop_loss,tp1=+t.tp1;
   let cancelReason=null;
-  const signalDayWib=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Jakarta",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date(t.signal_time));
-  const todayWib=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Jakarta",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
-  if(signalDayWib!==todayWib)cancelReason="EXPIRED_NEW_DAY_BEFORE_ENTRY";
+  // Do not expire untouched pending setups at calendar-day rollover (00:00 WIB).
+  // Web1 lifecycle day is the market session; pending expiry is handled exclusively
+  // by cancelPendingAtMarketClose() at 21:00 UTC / 04:00 WIB.
 
   if(!cancelReason && t.side==="BUY" && px<=sl)cancelReason="STRUCTURE_INVALIDATED_BEFORE_ENTRY";
   if(!cancelReason && t.side==="SELL" && px>=sl)cancelReason="STRUCTURE_INVALIDATED_BEFORE_ENTRY";
