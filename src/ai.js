@@ -32,3 +32,16 @@ export async function reviewTrade(payload){
  const raw=(response.output_text||"").trim(); if(!raw)throw new Error("Trade review empty");
  return JSON.parse(raw.replace(/^\`\`\`json\s*/i,"").replace(/\`\`\`$/,"").trim());
 }
+
+
+export async function reviewPendingSetup(payload){
+ const client=getClient();
+ const response=await client.responses.create({
+  model:process.env.OPENAI_MODEL||"gpt-5.6-luna",
+  instructions:"Anda adalah evaluator setup pending XAUUSD. Setup BELUM entry, tetapi harga sudah melewati TP1 sebelum menyentuh entry sehingga wajib ditinjau ulang. Nilai apakah setup lama masih fresh, structurally valid, realistically reachable, dan masih memiliki probability tinggi berdasarkan kondisi market TERBARU. Jangan mempertahankan setup hanya karena analisis awal pernah valid. CANCEL jika POI sudah stale/mitigated, struktur berubah/berlawanan, harga terlalu extended sehingga retest lama tidak lagi berkualitas, invalidation/reward tidak lagi masuk akal, atau probability tidak lagi tinggi. KEEP hanya jika arah dan struktur H1/M15 masih mendukung, POI/entry masih fresh dan reachable, tidak ada invalidation baru, serta probability tetap tinggi. Setup KEEP tetap memakai entry/SL/TP asli; jangan menggeser level. Kembalikan JSON valid saja dengan keys decision (KEEP atau CANCEL), probability (0-100), fresh (boolean), structuralValid (boolean), reachable (boolean), marketRegime, reason, invalidationRisk, evidence. probability adalah peluang setup lama masih layak digunakan, bukan peluang jaminan profit.",
+  input:"Review TARGET_PASSED_REVIEW_REQUIRED berikut. JSON only.\n"+JSON.stringify(payload),
+  text:{format:{type:"json_object"}}
+ });
+ const raw=(response.output_text||"").trim(); if(!raw)throw new Error("Pending setup review empty");
+ return JSON.parse(raw.replace(/^\`\`\`json\s*/i,"").replace(/\`\`\`$/,"").trim());
+}
