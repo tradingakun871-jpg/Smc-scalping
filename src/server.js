@@ -292,11 +292,11 @@ app.post("/api/learning/bootstrap-4d",bridgeAuth,async(req,res)=>{try{
  const trades=await getTradesBetween(symbol,"2026-09-29T00:00:00Z","2026-10-03T00:00:00Z");
  let reviewed=0,skipped=0;
  for(const t of trades){
-  const outcome=(t.tp1_touched||t.status==="TP1"||t.status==="TP2")?(t.status==="TP2"?"TP2":"TP1_REACHED"):(t.status==="SL"?"SL":null);
+  const outcome=t.status==="TP2"?"TP2":t.status==="TP1"?"TP1":t.status==="SL"?"SL":null;
   if(!outcome){skipped++;continue}
   await saveTradeLearningContext({hourlyId:t.hourly_id,symbol,regime:"HISTORICAL_PENDING_CLASSIFICATION",strategy:"HISTORICAL",context:{bootstrap:true,signalTime:t.signal_time,side:t.side,entry:+t.entry,stopLoss:+t.stop_loss,tp1:+t.tp1,tp2:+t.tp2,confidence:t.confidence,tp1Touched:!!t.tp1_touched}});
   try{
-   const review=await reviewTrade({period:"2026-09-29..2026-10-02",symbol,hourlyId:t.hourly_id,side:t.side,entry:+t.entry,stopLoss:+t.stop_loss,tp1:+t.tp1,tp2:+t.tp2,confidence:t.confidence,outcome,pnlPoints:+t.pnl_points||0,signalTime:t.signal_time,rule:"TP1 touched counts as WIN."});
+   const review=await reviewTrade({period:"2026-09-29..2026-10-02",symbol,hourlyId:t.hourly_id,side:t.side,entry:+t.entry,stopLoss:+t.stop_loss,tp1:+t.tp1,tp2:+t.tp2,confidence:t.confidence,outcome,pnlPoints:+t.pnl_points||0,signalTime:t.signal_time,rule:"Gunakan hanya outcome final TP1/TP2/SL untuk bootstrap performance. TP1_REACHED adalah intermediate dan bukan sampel final."});
    await saveTradeLearningContext({hourlyId:t.hourly_id,symbol,regime:review.marketRegime||"UNKNOWN",strategy:review.strategyUsed||"UNKNOWN",context:{bootstrap:true,signalTime:t.signal_time,side:t.side,entry:+t.entry,stopLoss:+t.stop_loss,tp1:+t.tp1,tp2:+t.tp2,confidence:t.confidence,tp1Touched:!!t.tp1_touched}});
    await saveTradeReview(t.hourly_id,outcome,+t.pnl_points||0,{...review,reviewStage:"FOUR_DAY_BOOTSTRAP"});reviewed++;
   }catch(e){console.error("BOOTSTRAP_REVIEW_ERROR",t.hourly_id,e.message)}
