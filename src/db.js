@@ -19,6 +19,15 @@ await pool.query(`CREATE TABLE IF NOT EXISTS trade_learning (
  reviewed_at TIMESTAMPTZ
 )`);
 await pool.query("CREATE INDEX IF NOT EXISTS idx_trade_learning_symbol_created ON trade_learning(symbol,created_at DESC)");
+await pool.query(`CREATE TABLE IF NOT EXISTS cancelled_shadow_learning (
+ hourly_id TEXT PRIMARY KEY REFERENCES trade_results(hourly_id) ON DELETE CASCADE,
+ symbol TEXT NOT NULL, cancel_reason TEXT, cancelled_at TIMESTAMPTZ,
+ entry_touched_after_cancel BOOLEAN NOT NULL DEFAULT FALSE,
+ shadow_entry_at TIMESTAMPTZ, shadow_tp1_touched BOOLEAN NOT NULL DEFAULT FALSE,
+ shadow_outcome TEXT NOT NULL DEFAULT 'ENTRY_NOT_RETOUCHED',
+ shadow_outcome_at TIMESTAMPTZ, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)`);
+await pool.query("CREATE INDEX IF NOT EXISTS idx_cancelled_shadow_symbol_time ON cancelled_shadow_learning(symbol,cancelled_at DESC)");
 await pool.query("CREATE TABLE IF NOT EXISTS hourly_analysis (hourly_id TEXT PRIMARY KEY,symbol TEXT NOT NULL,decision TEXT NOT NULL,analyzed_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");
 await pool.query("CREATE INDEX IF NOT EXISTS idx_hourly_analysis_symbol_time ON hourly_analysis(symbol,analyzed_at DESC)");
 await pool.query("INSERT INTO hourly_analysis(hourly_id,symbol,decision,analyzed_at) SELECT hourly_id,symbol,side,COALESCE(created_at,NOW()) FROM trade_results ON CONFLICT(hourly_id) DO NOTHING");
@@ -416,4 +425,50 @@ export async function resolvePendingSetupReview(hourlyId,resolution,{probability
  const lifecycleReason="AI_REVIEW_CANCELLED_"+(cleanReason||"STALE_OR_LOW_PROBABILITY")+(prob!=null?"_"+prob:"");
  const q=await pool.query("UPDATE trade_results SET status='CANCELLED',lifecycle_status='CANCELLED',lifecycle_reason=$2,lifecycle_updated_at=NOW(),closed_at=NOW(),pnl_points=0 WHERE hourly_id=$1 AND status='OPEN' AND entry_touched=FALSE RETURNING *",[hourlyId,lifecycleReason]);
  return q.rows[0]||t;
+}
+
+
+export async function updateCancelledShadowLearning(symbol,candle){
+ if(!pool)return[];
+ const hi=Number(candle?.high),lo=Number(candle?.low),ct=candle?.time?new Date(candle.time):new Date();
+ if(!Number.isFinite(hi)||!Number.isFinite(lo)||Number.isNaN(ct.getTime()))return[];
+ const r=await pool.query(`
+  SELECT t.*,s.entry_touched_after_cancel,s.shadow_tp1_touched,s.shadow_outcome
+  FROM trade_results t
+  LEFT JOIN cancelled_shadow_learning s ON s.hourly_id=t.hourly_id
+  WHERE t.symbol=$1 AND (t.status='CANCELLED' OR t.lifecycle_status='CANCELLED')
+    AND COALESCE(t.closed_at,t.lifecycle_updated_at) <= $2::timestamptz
+    AND COALESCE(s.shadow_outcome,'ENTRY_NOT_RETOUCHED') NOT IN ('TP2','SL')
+  ORDER BY COALESCE(t.closed_at,t.lifecycle_updated_at) ASC`,[symbol,ct.toISOString()]);
+ const events=[];
+ for(const t of r.rows){
+  const entry=+t.entry,sl=+t.stop_loss,tp1=+t.tp1,tp2=+t.tp2;
+  let entered=!!t.entry_touched_after_cancel,tp1Hit=!!t.shadow_tp1_touched,outcome=String(t.shadow_outcome||"ENTRY_NOT_RETOUCHED");
+  if(!entered && lo<=entry && hi>=entry){entered=true;outcome="ENTRY_RETOUCHED"}
+  if(entered){
+   if(t.side==="BUY"){
+    if(!tp1Hit&&lo<=sl){outcome="SL"}
+    else {if(hi>=tp1)tp1Hit=true;if(hi>=tp2)outcome="TP2";else if(tp1Hit)outcome="TP1"}
+   }else{
+    if(!tp1Hit&&hi>=sl){outcome="SL"}
+    else {if(lo<=tp1)tp1Hit=true;if(lo<=tp2)outcome="TP2";else if(tp1Hit)outcome="TP1"}
+   }
+  }
+  await pool.query(`INSERT INTO cancelled_shadow_learning(hourly_id,symbol,cancel_reason,cancelled_at,entry_touched_after_cancel,shadow_entry_at,shadow_tp1_touched,shadow_outcome,shadow_outcome_at,updated_at)
+   VALUES($1,$2,$3,$4,$5,CASE WHEN $5 THEN $6::timestamptz ELSE NULL END,$7,$8,CASE WHEN $8 IN ('TP1','TP2','SL') THEN $6::timestamptz ELSE NULL END,NOW())
+   ON CONFLICT(hourly_id) DO UPDATE SET entry_touched_after_cancel=EXCLUDED.entry_touched_after_cancel,shadow_entry_at=COALESCE(cancelled_shadow_learning.shadow_entry_at,EXCLUDED.shadow_entry_at),shadow_tp1_touched=EXCLUDED.shadow_tp1_touched,shadow_outcome=EXCLUDED.shadow_outcome,shadow_outcome_at=COALESCE(EXCLUDED.shadow_outcome_at,cancelled_shadow_learning.shadow_outcome_at),updated_at=NOW()`,
+   [t.hourly_id,symbol,t.lifecycle_reason,t.closed_at||t.lifecycle_updated_at,entered,ct.toISOString(),tp1Hit,outcome]);
+  if(outcome!==String(t.shadow_outcome||"ENTRY_NOT_RETOUCHED"))events.push({hourly_id:t.hourly_id,shadow_outcome:outcome,entry_touched_after_cancel:entered});
+ }
+ return events;
+}
+
+export async function getCancelledShadowLearning(symbol,{maxDays=90,limit=1000}={}){
+ if(!pool)return[];
+ const r=await pool.query(`SELECT s.*,t.side,t.entry,t.stop_loss,t.tp1,t.tp2,t.confidence,t.signal_time,l.regime,l.strategy,l.context
+ FROM cancelled_shadow_learning s JOIN trade_results t ON t.hourly_id=s.hourly_id
+ LEFT JOIN trade_learning l ON l.hourly_id=s.hourly_id
+ WHERE s.symbol=$1 AND COALESCE(s.cancelled_at,t.signal_time)>=NOW()-($2::text||' days')::interval
+ ORDER BY COALESCE(s.shadow_outcome_at,s.updated_at) DESC LIMIT $3`,[symbol,String(Math.max(7,Math.min(365,+maxDays||90))),Math.max(20,Math.min(2000,+limit||1000))]);
+ return r.rows;
 }
