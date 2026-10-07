@@ -200,7 +200,9 @@ export async function getTradeJournal(symbol,period="daily",date=new Date().toIS
  const rows=r.rows;
  const closed=rows.filter(t=>["TP1","TP2","SL"].includes(t.status));
  const wins=closed.filter(t=>t.status==="TP1"||t.status==="TP2").length,losses=closed.filter(t=>t.status==="SL").length;
- return{period:monthly?"monthly":"daily",date,timezone:"Asia/Jakarta",session,total:rows.length,open:rows.filter(t=>t.status==="OPEN").length,tp1:rows.filter(t=>t.status==="TP1").length,tp2:rows.filter(t=>t.status==="TP2").length,sl:losses,closed:closed.length,wins,losses,winrate:closed.length?+(wins*100/closed.length).toFixed(2):0,pnlPoints:+rows.reduce((a,t)=>a+(+t.pnl_points||0),0).toFixed(2),trades:rows};
+ const cancelled=rows.filter(t=>t.status==="CANCELLED"||t.lifecycle_status==="CANCELLED").length;
+ const valid=Math.max(0,rows.length-cancelled);
+ return{period:monthly?"monthly":"daily",date,timezone:"Asia/Jakarta",session,total:rows.length,valid,cancelled,validRate:rows.length?+(valid*100/rows.length).toFixed(2):0,open:rows.filter(t=>t.status==="OPEN"&&t.lifecycle_status!=="CANCELLED").length,tp1:rows.filter(t=>t.status==="TP1").length,tp2:rows.filter(t=>t.status==="TP2").length,sl:losses,closed:closed.length,wins,losses,winrate:closed.length?+(wins*100/closed.length).toFixed(2):0,pnlPoints:+rows.reduce((a,t)=>a+(+t.pnl_points||0),0).toFixed(2),trades:rows};
 }
 
 export async function getLatestOpenTrade(symbol){
