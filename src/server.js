@@ -3,7 +3,7 @@ import crypto from "crypto";
 import {analyzeSMC,analyzeRollingM5} from "./smc.js";
 import {aiDecision,reviewTrade,reviewPendingSetup} from "./ai.js";
 import {getFundamental} from "./fundamental.js";
-import {initDb,checkDb,touchHeartbeat,getHeartbeat,saveM5Candle,getM5Block,getCurrentM5Count,saveMtfCandles,getHistoricalCandles,saveTradeSignal,updateOpenTrades,updateOpenTradesFromPrice,getTradeStats,getTradeJournal,getLatestOpenTrade,hasTradeSignal,hasHourlyAnalysis,saveHourlyAnalysis,normalizeLegacyHourlySignals,getLatestTrade,saveTradeLearningContext,saveTradeReview,getLearningMemory,getRollingLearningMemory,getLongTermLearningMemory,getTradesBetween,getLearningSummary,evaluatePendingSetups,resolvePendingSetupReview} from "./db.js";
+import {initDb,checkDb,touchHeartbeat,getHeartbeat,saveM5Candle,getM5Block,getCurrentM5Count,saveMtfCandles,getHistoricalCandles,saveTradeSignal,updateOpenTrades,updateOpenTradesFromPrice,getTradeStats,getTradeJournal,getLatestOpenTrade,hasTradeSignal,hasHourlyAnalysis,saveHourlyAnalysis,normalizeLegacyHourlySignals,getLatestTrade,saveTradeLearningContext,saveTradeReview,getLearningMemory,getRollingLearningMemory,getLongTermLearningMemory,getCancelledLearningMemory,getTradesBetween,getLearningSummary,evaluatePendingSetups,resolvePendingSetupReview} from "./db.js";
 const app=express();app.use(express.json({limit:"1mb"}));app.use(express.static("public"));
 const buffers=new Map(),lastSignal=new Map(),latest=new Map(),aiRuntime=new Map(),livePrice=new Map(),lastM5Ingest=new Map();let lastMt5At=0;
 const minTech=Number(process.env.MIN_TECHNICAL_SCORE||70),minFinal=Number(process.env.MIN_FINAL_SCORE||70);
@@ -286,6 +286,37 @@ function buildAdaptiveProfile(memory=[]){
  const nextCheckpoint=n<20?20:n<50?50:n<100?100:n<200?200:null;
  return {finalSamples:n,checkpoint,nextCheckpoint,historyWindowDays:7,timeDecay:"half-life-2d",regimeAware:true,performance,learningActions,strategyAdjustments,bestEntryPatterns:bestEntryPatterns.slice(0,8),bestEntryConclusion:validated.length?{status:"AVAILABLE",best:validated[0],alternatives:validated.slice(1,3),rule:"Prefer historically strong patterns only when current live structure is also valid. Historical rank never overrides structure or risk guardrails."}:{status:"INSUFFICIENT_VALIDATED_SAMPLE",rule:"Keep collecting finalized trades. Do not declare a best entry from small samples."},rule:"Continuous learning uses finalized trades from today first and can extend through the previous 7 days. Winners reinforce repeatable valid conditions; losses create corrections/avoid evidence. Newer outcomes have higher time-decay weight and matching regimes receive extra weight. Historical entry ranking compares strategy + regime + side using weighted win rate, expectancy/R and sample reliability. Checkpoints 20/50/100/200 control adaptation confidence. PENDING/CANCELLED never affect winrate/PF. Never override structural safety, Web1 SL 35-60 pips, TP1=1R, TP2=2R, or one-signal-per-H1."};
 }
+function buildCancelledLearningProfile(rows=[]){
+ const reasons={},strategies={},regimes={};
+ const recent=[];
+ for(const x of rows){
+  const reason=String(x.lifecycle_reason||x.review?.primaryCause||"CANCELLED_UNKNOWN");
+  const strategy=String(x.strategy||x.review?.strategyUsed||"UNKNOWN");
+  const regime=String(x.regime||x.review?.marketRegime||"UNKNOWN");
+  reasons[reason]=(reasons[reason]||0)+1;
+  strategies[strategy]=(strategies[strategy]||0)+1;
+  regimes[regime]=(regimes[regime]||0)+1;
+  if(recent.length<16)recent.push({
+   hourlyId:x.hourly_id,side:x.side,strategy,regime,reason,
+   probability:Number.isFinite(Number(x.review?.probability))?Number(x.review.probability):null,
+   fresh:x.review?.fresh,
+   structuralValid:x.review?.structuralValid,
+   reachable:x.review?.reachable,
+   lesson:x.review?.lesson||x.review?.reason||null,
+   signalContext:x.context||null
+  });
+ }
+ const top=o=>Object.entries(o).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([name,count])=>({name,count}));
+ return{
+  samples:rows.length,
+  topCancellationReasons:top(reasons),
+  strategies:top(strategies),
+  regimes:top(regimes),
+  recentCancelledSetups:recent,
+  instruction:"CANCELLED setups are setup-quality evidence, not performance outcomes. Use them to avoid stale/mitigated POI, unreachable entries, pre-entry structural invalidation, expiry and target-passed low-probability conditions. They MUST NOT count as WIN/LOSS or alter WR/PF/PnL."
+ };
+}
+
 app.get("/health",async(req,res)=>{let persistedMt5=null,dbStatus="OFFLINE";try{dbStatus=await checkDb()?"ONLINE":"OFFLINE";persistedMt5=await getHeartbeat("MT5")}catch(e){console.error("heartbeat db read",e.message)}if(persistedMt5)lastMt5At=Math.max(lastMt5At,new Date(persistedMt5).getTime());let fundamentalHealth={status:"ERROR",coverageWeight:0};try{const f=await getFundamental();fundamentalHealth={status:f.status,coverageWeight:f.coverageWeight||0,dxy:f.dxy?"ONLINE":"OFFLINE",yield10y:f.yield10y?"ONLINE":"OFFLINE",calendar:f.calendar?.status==="LIVE"?"ONLINE":"OFFLINE",goldMacro:f.goldMacro?.status==="LIVE"?"ONLINE":"OFFLINE",updatedAt:f.updatedAt};}catch(e){fundamentalHealth.error=e.message;}let openaiStatus="OFFLINE";if(process.env.OPENAI_API_KEY){try{const r=await fetch("https://api.openai.com/v1/models",{headers:{Authorization:"Bearer "+process.env.OPENAI_API_KEY},signal:AbortSignal.timeout(5000)});openaiStatus=r.ok?"ONLINE":"OFFLINE";}catch{openaiStatus="OFFLINE";}}const age=lastMt5At?Date.now()-lastMt5At:null;const mt5Status=age!=null&&age<=7*60*1000?"ONLINE":"OFFLINE";const systemOnline=dbStatus==="ONLINE"&&mt5Status==="ONLINE";res.json({ok:systemOnline,service:"smc-scalping-ai",engine:"D1_BIAS_H1_M15_M5_SMC",bridgeAuth:!!process.env.BRIDGE_TOKEN,minTech,minFinal,connections:{backend:{status:"ONLINE"},database:{status:dbStatus},mt5:{status:mt5Status,lastSeenAt:lastMt5At?new Date(lastMt5At).toISOString():null,ageSeconds:age==null?null:Math.round(age/1000)},openai:{status:openaiStatus},fred:{status:fundamentalHealth.dxy==="ONLINE"&&fundamentalHealth.yield10y==="ONLINE"?"ONLINE":"OFFLINE"}},fundamental:fundamentalHealth});});
 app.post("/api/learning/bootstrap-4d",bridgeAuth,async(req,res)=>{try{
  const symbol=String(req.body?.symbol||"XAUUSD").toUpperCase();
@@ -379,7 +410,9 @@ app.post("/api/mtf/analyze",bridgeAuth,async(req,res)=>{try{
  const recentRegime=learningMemory.find(x=>x?.regime&&x.regime!=="UNKNOWN")?.regime||null;
  if(recentRegime)learningMemory=await getRollingLearningMemory(key,{minSamples:20,maxDays:7,limit:200,currentRegime:recentRegime}).catch(()=>learningMemory);
  const longTermMemory=await getLongTermLearningMemory(key,{maxDays:90,limit:1000,currentRegime:recentRegime}).catch(()=>[]);
+const cancelledMemory=await getCancelledLearningMemory(key,{maxDays:90,limit:1000,currentRegime:recentRegime}).catch(()=>[]);
 const adaptiveProfile=buildAdaptiveProfile(learningMemory);
+adaptiveProfile.cancelledSetupLearning=buildCancelledLearningProfile(cancelledMemory);
 const longTermProfile=buildAdaptiveProfile(longTermMemory);
 adaptiveProfile.longTermLearning={
  windowDays:90,
@@ -402,7 +435,7 @@ if(slStreak>=2){
  adaptiveProfile.lossStreakReview={triggered:true,consecutiveSL:slStreak,strategies,regimes,causes:losses.map(x=>x.review?.primaryCause).filter(Boolean),lossCases:losses.map(x=>({hourlyId:x.hourly_id||x.hourlyId,regime:x.regime,strategy:x.strategy,outcome:x.outcome,review:x.review,context:x.context})),recentWinningCases:recentWins.map(x=>({hourlyId:x.hourly_id||x.hourlyId,regime:x.regime,strategy:x.strategy,outcome:x.outcome,review:x.review,context:x.context})),instruction:"MANDATORY DEEP REVIEW BEFORE NEXT ENTRY: two or more consecutive finalized SL detected. Compare the loss cases against recent winning cases. Identify the common pre-loss pattern in regime, D1/H1/M15 alignment, lower-TF trigger, POI freshness/reachability, displacement/sweep/BOS-MSS evidence, entry timing and whether price was already extended. Convert that comparison into explicit avoid/require conditions for this next decision. Do not simply reverse direction after losses and do not repeat the same weak pattern. Deprioritize the failing method/regime combination unless current evidence is materially stronger; actively compare POI versus ENGULFING_DIRECT/BREAKOUT_DIRECT/BREAKOUT_RETEST/BREAKOUT_CONTINUATION and choose NO_TRADE when no structurally superior setup exists. Learning changes selection quality only and MUST NOT change blueprint risk, SL 35-60 pips, TP1=1R, TP2=2R, or one-analysis-per-H1."};
 }
 console.log("AI_ADAPTIVE_PROFILE",JSON.stringify({symbol:key,hourlyId,...adaptiveProfile}));
- let result=await aiDecision({symbol:key,mode:"HOURLY_D1_MTF_ANALYSIS",trigger:"CLOSED_H1",daily:{previousClosedD1:d1,bias:dailyBias},timeframes:{h1:H1.slice(-24),m15:M15.slice(-32),m5:M5.slice(-36),m3:M3.slice(-60),m1:M1.slice(-90)},structure:{h1Direction},technical,technicalScore:techScore,technicalDirection:side,fundamental:{...fund,score:fundamentalScore},weightedScore,thresholds:{minTechnical:minTech,minFinal},weights:{technical:70,fundamental:30},learningMemory,adaptiveProfile,rule:"Analyze exactly once per newly closed H1. For Web 1, select ONE best available structurally valid BUY/SELL setup per H1 using learningMemory plus live H1/M15 and M5/M3/M1 evidence. If adaptiveProfile.lossStreakReview.triggered is true, complete that mandatory review before selecting the next entry and do not repeat the same weak method/regime pattern without materially stronger structural evidence. Use adaptiveProfile.learningActions explicitly: reinforce recurring WIN conditions when current structure confirms them, and apply LOSS corrections/avoid rules before repeating a previously failing setup. Also use both adaptiveProfile.bestEntryPatterns/bestEntryConclusion (recent tactical memory) and adaptiveProfile.longTermLearning (historical memory). Prefer patterns that are strong in both layers; when recent and long-term disagree, prioritize recent regime/structure and treat long-term evidence as secondary. Evaluate improvement jointly by WR, PF, realized PnL/Net-R, expectancy and drawdown; never improve one metric by materially degrading the others. Never force a historical favorite into an invalid live market. Rank POI, ENGULFING_DIRECT, BREAKOUT_DIRECT, BREAKOUT_RETEST and BREAKOUT_CONTINUATION candidates; do not reject solely on a fixed confidence threshold. NO_TRADE is only a final safety exception when no candidate has valid structure and a 35-60 pip structural stop. Return BUY or SELL only when the setup is high quality; otherwise return NO_TRADE. A trade requires coherent H1/M15 direction plus a valid M5/M3/M1 execution trigger: (1) fresh reachable POI from Supply/Demand, strong SNR, OB or FVG with displacement/rejection/sweep evidence, OR (2) strong ENGULFING_DIRECT at meaningful structure, OR (3) confirmed breakout close/retest/continuation with displacement. Prefer at least two confluences. When H1/M15 conflict or the primary POI is stale, continue ranking the remaining M5/M3/M1 candidates and select the safest structurally valid alternative. Reject wick-only/chasing candidates, but for HOURLY mode do not stop searching until POI, ENGULFING_DIRECT, BREAKOUT_DIRECT, BREAKOUT_RETEST and BREAKOUT_CONTINUATION have all been evaluated. NO_TRADE is permitted only when every candidate fails structural safety or no 35-60 pip structural invalidation exists. For XAUUSD Web 1, derive SL from the nearest valid structural invalidation/POI/swing and require Entry-to-SL distance of 35-60 pips (3.50-6.00 price units). BUY SL must be below entry; SELL SL must be above entry. Never use less than 35 or more than 60 pips. Derive TP1=1R and TP2=2R from the actual final Entry-to-SL distance."});
+ let result=await aiDecision({symbol:key,mode:"HOURLY_D1_MTF_ANALYSIS",trigger:"CLOSED_H1",daily:{previousClosedD1:d1,bias:dailyBias},timeframes:{h1:H1.slice(-24),m15:M15.slice(-32),m5:M5.slice(-36),m3:M3.slice(-60),m1:M1.slice(-90)},structure:{h1Direction},technical,technicalScore:techScore,technicalDirection:side,fundamental:{...fund,score:fundamentalScore},weightedScore,thresholds:{minTechnical:minTech,minFinal},weights:{technical:70,fundamental:30},learningMemory,adaptiveProfile,rule:"Analyze exactly once per newly closed H1. For Web 1, select ONE best available structurally valid BUY/SELL setup per H1 using learningMemory plus live H1/M15 and M5/M3/M1 evidence. If adaptiveProfile.lossStreakReview.triggered is true, complete that mandatory review before selecting the next entry and do not repeat the same weak method/regime pattern without materially stronger structural evidence. Use adaptiveProfile.learningActions explicitly: reinforce recurring WIN conditions when current structure confirms them, and apply LOSS corrections/avoid rules before repeating a previously failing setup. Also use adaptiveProfile.cancelledSetupLearning as setup-quality negative evidence: CANCELLED setups never affect WR/PF/PnL, but their stale/unreachable/invalid/expired conditions must be checked before accepting a similar setup. Also use both adaptiveProfile.bestEntryPatterns/bestEntryConclusion (recent tactical memory) and adaptiveProfile.longTermLearning (historical memory). Prefer patterns that are strong in both layers; when recent and long-term disagree, prioritize recent regime/structure and treat long-term evidence as secondary. Evaluate improvement jointly by WR, PF, realized PnL/Net-R, expectancy and drawdown; never improve one metric by materially degrading the others. Never force a historical favorite into an invalid live market. Rank POI, ENGULFING_DIRECT, BREAKOUT_DIRECT, BREAKOUT_RETEST and BREAKOUT_CONTINUATION candidates; do not reject solely on a fixed confidence threshold. NO_TRADE is only a final safety exception when no candidate has valid structure and a 35-60 pip structural stop. Return BUY or SELL only when the setup is high quality; otherwise return NO_TRADE. A trade requires coherent H1/M15 direction plus a valid M5/M3/M1 execution trigger: (1) fresh reachable POI from Supply/Demand, strong SNR, OB or FVG with displacement/rejection/sweep evidence, OR (2) strong ENGULFING_DIRECT at meaningful structure, OR (3) confirmed breakout close/retest/continuation with displacement. Prefer at least two confluences. When H1/M15 conflict or the primary POI is stale, continue ranking the remaining M5/M3/M1 candidates and select the safest structurally valid alternative. Reject wick-only/chasing candidates, but for HOURLY mode do not stop searching until POI, ENGULFING_DIRECT, BREAKOUT_DIRECT, BREAKOUT_RETEST and BREAKOUT_CONTINUATION have all been evaluated. NO_TRADE is permitted only when every candidate fails structural safety or no 35-60 pip structural invalidation exists. For XAUUSD Web 1, derive SL from the nearest valid structural invalidation/POI/swing and require Entry-to-SL distance of 35-60 pips (3.50-6.00 price units). BUY SL must be below entry; SELL SL must be above entry. Never use less than 35 or more than 60 pips. Derive TP1=1R and TP2=2R from the actual final Entry-to-SL distance."});
  result=enforceWeb1Blueprint(result);
  console.log("MTF_DECISION",JSON.stringify({symbol:key,hourlyId,decision:result?.decision,confidence:result?.confidence,entry:result?.entry,stopLoss:result?.stopLoss,tp1:result?.takeProfit1,tp2:result?.takeProfit2,strategy:result?.strategyUsed,reason:result?.entryReason||result?.technicalReason||null,payload:{m1:M1.slice(-90).length,m3:M3.slice(-60).length,m5:M5.slice(-36).length,m15:M15.slice(-32).length,h1:H1.slice(-24).length}}));
  if(["BUY","SELL"].includes(result.decision)&&[result.entry,result.stopLoss,result.takeProfit1,result.takeProfit2].every(v=>Number.isFinite(Number(v)))){await saveTradeSignal({hourlyId,symbol:key,side:result.decision,entry:+result.entry,stopLoss:+result.stopLoss,tp1:+result.takeProfit1,tp2:+result.takeProfit2,confidence:+result.confidence||null,signalTime:h1Slot.toISOString()});
@@ -422,8 +455,11 @@ initDb().then(async()=>{
  try{
   const recent=await getRollingLearningMemory("XAUUSD",{minSamples:20,maxDays:7,limit:500,currentRegime:null});
   const longTerm=await getLongTermLearningMemory("XAUUSD",{maxDays:90,limit:1000,currentRegime:null});
+  const cancelled=await getCancelledLearningMemory("XAUUSD",{maxDays:90,limit:1000,currentRegime:null});
+  const allSinceSep30=await getTradesBetween("XAUUSD","2026-09-30T00:00:00Z",new Date().toISOString());
   const recentProfile=buildAdaptiveProfile(recent);
   const longProfile=buildAdaptiveProfile(longTerm);
+  const statusCounts=allSinceSep30.reduce((o,x)=>{const k=String(x.status||x.lifecycle_status||"UNKNOWN");o[k]=(o[k]||0)+1;return o;},{});
   const compact=p=>p?{
    samples:p.finalSamples,
    performance:p.performance,
@@ -434,6 +470,11 @@ initDb().then(async()=>{
   }:null;
   console.log("LEARNING_BOOTSTRAP_READY",JSON.stringify({
    symbol:"XAUUSD",
+   totalRecordsSinceSep30:allSinceSep30.length,
+   statusCountsSinceSep30:statusCounts,
+   cancelledSetups:cancelled.length,
+   cancelledReviewed:cancelled.filter(x=>x.review).length,
+   cancelledLearning:buildCancelledLearningProfile(cancelled),
    reviewedRecent:recent.filter(x=>x.review&&["TP1","TP2","SL"].includes(x.outcome)).length,
    reviewedLongTerm:longTerm.filter(x=>x.review&&["TP1","TP2","SL"].includes(x.outcome)).length,
    recent:compact(recentProfile),
