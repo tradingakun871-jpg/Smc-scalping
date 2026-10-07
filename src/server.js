@@ -415,4 +415,31 @@ console.log("AI_ADAPTIVE_PROFILE",JSON.stringify({symbol:key,hourlyId,...adaptiv
  res.json({status:result.decision==="NO_TRADE"?"WAIT":"SIGNAL",telegram,...record});
 }catch(e){console.error("MTF_ANALYZE_ERROR",e?.stack||e?.message||e);res.status(400).json({error:e.message})}});
 app.post("/api/analyze",bridgeAuth,async(req,res)=>{try{const{symbol="XAUUSD",candles,fundamental={},h1Context={}}=req.body;const record=await run(symbol.toUpperCase(),candles,fundamental,h1Context);latest.set(symbol.toUpperCase(),record);res.json(record)}catch(e){res.status(400).json({error:e.message})}});
-const port=process.env.PORT||3000;initDb().then(async()=>{await normalizeLegacyHourlySignals("XAUUSD");console.log("Database heartbeat ready")}).catch(e=>console.error("Database init failed",e.message));app.listen(port,()=>console.log("SMC AI listening on",port));
+const port=process.env.PORT||3000;
+initDb().then(async()=>{
+ await normalizeLegacyHourlySignals("XAUUSD");
+ console.log("Database heartbeat ready");
+ try{
+  const recent=await getRollingLearningMemory("XAUUSD",{minSamples:20,maxDays:7,limit:500,currentRegime:null});
+  const longTerm=await getLongTermLearningMemory("XAUUSD",{maxDays:90,limit:1000,currentRegime:null});
+  const recentProfile=buildAdaptiveProfile(recent);
+  const longProfile=buildAdaptiveProfile(longTerm);
+  const compact=p=>p?{
+   samples:p.finalSamples,
+   performance:p.performance,
+   bestEntryConclusion:p.bestEntryConclusion,
+   strategyAdjustments:p.strategyAdjustments,
+   winRules:p.learningActions?.reinforcedWinRules?.length||0,
+   lossRules:p.learningActions?.lossCorrections?.length||0
+  }:null;
+  console.log("LEARNING_BOOTSTRAP_READY",JSON.stringify({
+   symbol:"XAUUSD",
+   reviewedRecent:recent.filter(x=>x.review&&["TP1","TP2","SL"].includes(x.outcome)).length,
+   reviewedLongTerm:longTerm.filter(x=>x.review&&["TP1","TP2","SL"].includes(x.outcome)).length,
+   recent:compact(recentProfile),
+   longTerm:compact(longProfile),
+   rule:"Startup audit only. Learning uses finalized TP1/TP2/SL, reinforces WIN evidence, corrects LOSS evidence, and never changes blueprint guardrails."
+  }));
+ }catch(e){console.error("LEARNING_BOOTSTRAP_ERROR",e.message)}
+}).catch(e=>console.error("Database init failed",e.message));
+app.listen(port,()=>console.log("SMC AI listening on",port));
