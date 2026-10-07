@@ -329,6 +329,30 @@ export async function getLearningSummary(symbol){
  return r.rows.map(x=>({...x,winrate:(x.wins+x.losses)?+(x.wins*100/(x.wins+x.losses)).toFixed(2):0}));
 }
 
+export async function cancelPendingAtMarketClose(symbol,now=new Date()){
+ if(!pool)return[];
+ const t=new Date(now);
+ if(Number.isNaN(t.getTime()))return[];
+ // Web1 market session blueprint: daily close 21:00 UTC = 04:00 WIB,
+ // reopen 22:00 UTC = 05:00 WIB. Cancel only untouched PENDING setups.
+ if(t.getUTCHours()!==21)return[];
+ const r=await pool.query(`
+  UPDATE trade_results
+     SET status='CANCELLED',
+         lifecycle_status='CANCELLED',
+         lifecycle_reason='MARKET_CLOSED_PENDING_CANCELLED',
+         lifecycle_updated_at=NOW(),
+         closed_at=NOW(),
+         pnl_points=0
+   WHERE symbol=$1
+     AND status='OPEN'
+     AND entry_touched=FALSE
+     AND lifecycle_status<>'CANCELLED'
+  RETURNING *`,[symbol]);
+ return r.rows;
+}
+
+
 export async function evaluatePendingSetups(symbol,price){
  if(!pool||!Number.isFinite(+price))return[];
  const px=+price;
