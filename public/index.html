@@ -20,6 +20,7 @@ function shortLifecycle(v){
  if(s==='TARGET_PASSED_REVIEW_REQUIRED')return 'Target terlewati • review AI';
  if(s==='STRUCTURE_INVALIDATED_BEFORE_ENTRY')return 'Struktur invalid • dibatalkan';
  if(s==='EXPIRED_NEW_DAY_BEFORE_ENTRY')return 'Lewat hari • dibatalkan';
+ if(s==='MARKET_CLOSED_PENDING_CANCELLED')return 'Market close • pending dibatalkan';
  if(s==='ENTRY_TOUCHED')return 'Entry tersentuh • ACTIVE';
  if(s==='STILL_REACHABLE')return 'Setup masih valid • dipantau';
  if(s.startsWith('AI_REVIEW_VALID_HIGH_PROBABILITY_'))return 'AI: setup masih valid • Prob. '+(s.match(/(\d+)$/)?.[1]||'—')+'%';
