@@ -173,14 +173,36 @@ export async function getTradeJournal(symbol,period="daily",date=new Date().toIS
  if(!m)throw new Error("Invalid journal date");
  const y=+m[1],mo=+m[2]-1,d=+m[3];
  const monthly=period==="monthly";
- const start=new Date(Date.UTC(y,mo,monthly?1:d,-7,0,0,0));
- const end=monthly?new Date(Date.UTC(y,mo+1,1,-7,0,0,0)):new Date(Date.UTC(y,mo,d+1,-7,0,0,0));
+ let start,end,session;
+ if(monthly){
+  // Keep the monthly view on the existing WIB calendar-month boundary.
+  start=new Date(Date.UTC(y,mo,1,-7,0,0,0));
+  end=new Date(Date.UTC(y,mo+1,1,-7,0,0,0));
+  session={basis:"WIB_CALENDAR_MONTH",displayTimezone:"Asia/Jakarta"};
+ }else{
+  // Daily XAUUSD journal follows the market session in UTC:
+  // OPEN 22:00 UTC (05:00 WIB) -> CLOSE 21:00 UTC next UTC date (04:00 WIB next WIB day).
+  // The selected journal date is the WIB date on which that market session opens.
+  start=new Date(Date.UTC(y,mo,d-1,22,0,0,0));
+  end=new Date(Date.UTC(y,mo,d,21,0,0,0));
+  session={
+   basis:"UTC_MARKET_SESSION",
+   openUtc:"22:00",
+   closeUtc:"21:00",
+   openWib:"05:00",
+   closeWib:"04:00",
+   displayTimezone:"Asia/Jakarta",
+   startUtc:start.toISOString(),
+   endUtc:end.toISOString()
+  };
+ }
  const r=await pool.query("SELECT hourly_id,symbol,side,entry,stop_loss,tp1,tp2,confidence,signal_time,status,entry_touched,tp1_touched,lifecycle_status,lifecycle_reason,lifecycle_updated_at,exit_price,pnl_points,closed_at FROM trade_results WHERE symbol=$1 AND signal_time >= $2 AND signal_time < $3 ORDER BY signal_time DESC,created_at DESC",[symbol,start.toISOString(),end.toISOString()]);
  const rows=r.rows;
  const closed=rows.filter(t=>["TP1","TP2","SL"].includes(t.status));
  const wins=closed.filter(t=>t.status==="TP1"||t.status==="TP2").length,losses=closed.filter(t=>t.status==="SL").length;
- return{period:monthly?"monthly":"daily",date,timezone:"Asia/Jakarta",total:rows.length,open:rows.filter(t=>t.status==="OPEN").length,tp1:rows.filter(t=>t.status==="TP1").length,tp2:rows.filter(t=>t.status==="TP2").length,sl:losses,closed:closed.length,wins,losses,winrate:closed.length?+(wins*100/closed.length).toFixed(2):0,pnlPoints:+rows.reduce((a,t)=>a+(+t.pnl_points||0),0).toFixed(2),trades:rows};
+ return{period:monthly?"monthly":"daily",date,timezone:"Asia/Jakarta",session,total:rows.length,open:rows.filter(t=>t.status==="OPEN").length,tp1:rows.filter(t=>t.status==="TP1").length,tp2:rows.filter(t=>t.status==="TP2").length,sl:losses,closed:closed.length,wins,losses,winrate:closed.length?+(wins*100/closed.length).toFixed(2):0,pnlPoints:+rows.reduce((a,t)=>a+(+t.pnl_points||0),0).toFixed(2),trades:rows};
 }
+
 export async function getLatestOpenTrade(symbol){
  if(!pool)return null;
  const r=await pool.query("SELECT hourly_id,symbol,side,entry,stop_loss,CASE WHEN tp1_touched THEN entry ELSE stop_loss END AS effective_stop_loss,tp1,tp2,confidence,signal_time,status,entry_touched,tp1_touched,lifecycle_status,lifecycle_reason,lifecycle_updated_at FROM trade_results WHERE symbol=$1 AND status='OPEN' AND lifecycle_status<>'CANCELLED' ORDER BY signal_time DESC,created_at DESC LIMIT 1",[symbol]);
