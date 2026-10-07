@@ -183,7 +183,7 @@ export async function getTradeJournal(symbol,period="daily",date=new Date().toIS
 }
 export async function getLatestOpenTrade(symbol){
  if(!pool)return null;
- const r=await pool.query("SELECT hourly_id,symbol,side,entry,stop_loss,tp1,tp2,confidence,signal_time,status,entry_touched,tp1_touched,lifecycle_status,lifecycle_reason,lifecycle_updated_at FROM trade_results WHERE symbol=$1 AND status='OPEN' AND lifecycle_status<>'CANCELLED' ORDER BY signal_time DESC,created_at DESC LIMIT 1",[symbol]);
+ const r=await pool.query("SELECT hourly_id,symbol,side,entry,stop_loss,CASE WHEN tp1_touched THEN entry ELSE stop_loss END AS effective_stop_loss,tp1,tp2,confidence,signal_time,status,entry_touched,tp1_touched,lifecycle_status,lifecycle_reason,lifecycle_updated_at FROM trade_results WHERE symbol=$1 AND status='OPEN' AND lifecycle_status<>'CANCELLED' ORDER BY signal_time DESC,created_at DESC LIMIT 1",[symbol]);
  return r.rows[0]||null;
 }
 export async function hasHourlyAnalysis(hourlyId){if(!pool)return false;const r=await pool.query("SELECT 1 FROM hourly_analysis WHERE hourly_id=$1 LIMIT 1",[hourlyId]);return r.rowCount>0}
@@ -275,7 +275,7 @@ export async function getTradesBetween(symbol,start,end){
 }
 export async function getLearningSummary(symbol){
  if(!pool)return[];
- const r=await pool.query(`SELECT COALESCE(regime,'UNKNOWN') regime,COALESCE(strategy,'UNKNOWN') strategy,COUNT(*)::int samples,COUNT(*) FILTER(WHERE outcome IN ('TP1','TP2'))::int wins,COUNT(*) FILTER(WHERE outcome='SL')::int losses,COALESCE(SUM(pnl_points),0)::float pnl_points FROM trade_learning WHERE symbol=$1 AND outcome IS NOT NULL GROUP BY 1,2 ORDER BY samples DESC,pnl_points DESC`,[symbol]);
+ const r=await pool.query(`SELECT COALESCE(regime,'UNKNOWN') regime,COALESCE(strategy,'UNKNOWN') strategy,COUNT(*)::int samples,COUNT(*) FILTER(WHERE outcome IN ('TP1','TP2'))::int wins,COUNT(*) FILTER(WHERE outcome='SL')::int losses,COALESCE(SUM(pnl_points),0)::float pnl_points FROM trade_learning WHERE symbol=$1 AND outcome IN ('TP1','TP2','SL') GROUP BY 1,2 ORDER BY samples DESC,pnl_points DESC`,[symbol]);
  return r.rows.map(x=>({...x,winrate:(x.wins+x.losses)?+(x.wins*100/(x.wins+x.losses)).toFixed(2):0}));
 }
 
