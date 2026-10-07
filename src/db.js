@@ -100,14 +100,19 @@ export async function evaluatePendingSetups(symbol,price){
  for(const t of r.rows){
   const entry=+t.entry,sl=+t.stop_loss,tp1=+t.tp1,tp2=+t.tp2;
   let cancelReason=null;
+  // Untouched setups expire when the Jakarta/WIB calendar day changes.
+  // They must never remain eligible for entry on the following day.
+  const signalDayWib=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Jakarta",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date(t.signal_time));
+  const todayWib=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Jakarta",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
+  if(signalDayWib!==todayWib)cancelReason='EXPIRED_NEW_DAY_BEFORE_ENTRY';
   // Passing TP1 before entry requires re-evaluation; do not auto-cancel.
   const targetPassed=(t.side==='BUY' && px>=tp1)||(t.side==='SELL' && px<=tp1);
   if(targetPassed){
    await pool.query("UPDATE trade_results SET lifecycle_status='PENDING',lifecycle_reason='TARGET_PASSED_REVIEW_REQUIRED',lifecycle_updated_at=NOW() WHERE hourly_id=$1 AND entry_touched=FALSE AND status='OPEN'",[t.hourly_id]);
   }
   // If price crosses structural invalidation before entry, cancel the untouched setup.
-  if(t.side==='BUY' && px<=sl)cancelReason='STRUCTURE_INVALIDATED_BEFORE_ENTRY';
-  if(t.side==='SELL' && px>=sl)cancelReason='STRUCTURE_INVALIDATED_BEFORE_ENTRY';
+  if(!cancelReason && t.side==='BUY' && px<=sl)cancelReason='STRUCTURE_INVALIDATED_BEFORE_ENTRY';
+  if(!cancelReason && t.side==='SELL' && px>=sl)cancelReason='STRUCTURE_INVALIDATED_BEFORE_ENTRY';
   if(cancelReason){
    await pool.query("UPDATE trade_results SET status='CANCELLED',lifecycle_status='CANCELLED',lifecycle_reason=$2,lifecycle_updated_at=NOW(),closed_at=NOW(),pnl_points=0 WHERE hourly_id=$1 AND entry_touched=FALSE AND status='OPEN'",[t.hourly_id,cancelReason]);
    events.push({...t,status:'CANCELLED',lifecycle_status:'CANCELLED',lifecycle_reason:cancelReason});
