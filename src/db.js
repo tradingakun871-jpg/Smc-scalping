@@ -2,7 +2,9 @@ import pg from "pg";
 const {Pool}=pg;
 const pool=process.env.DATABASE_URL?new Pool({connectionString:process.env.DATABASE_URL}):null;
 export async function checkDb(){if(!pool)return false;const r=await pool.query("SELECT 1 AS ok");return r.rows[0]?.ok===1}
-export async function initDb(){if(!pool)return false;const fix=await pool.query("UPDATE trade_results SET status='TP1',exit_price=tp1,pnl_points=entry-tp1,closed_at=NOW() WHERE symbol='XAUUSD' AND side='SELL' AND ABS(entry-4171.217)<0.000001 AND status='SL'");if(fix.rowCount)console.log("HISTORICAL_TRADE_CORRECTED SELL 4171.217 SL->TP1",fix.rowCount);await pool.query("CREATE TABLE IF NOT EXISTS service_heartbeat (service TEXT PRIMARY KEY,last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");await pool.query("CREATE TABLE IF NOT EXISTS m5_candles (symbol TEXT NOT NULL,candle_time TIMESTAMPTZ NOT NULL,payload JSONB NOT NULL,received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(symbol,candle_time))");await pool.query("CREATE INDEX IF NOT EXISTS idx_m5_symbol_time ON m5_candles(symbol,candle_time DESC)");await pool.query(`CREATE TABLE IF NOT EXISTS trade_results (hourly_id TEXT PRIMARY KEY,symbol TEXT NOT NULL,side TEXT NOT NULL,entry DOUBLE PRECISION NOT NULL,stop_loss DOUBLE PRECISION NOT NULL,tp1 DOUBLE PRECISION NOT NULL,tp2 DOUBLE PRECISION NOT NULL,confidence DOUBLE PRECISION,signal_time TIMESTAMPTZ NOT NULL,status TEXT NOT NULL DEFAULT 'OPEN',exit_price DOUBLE PRECISION,pnl_points DOUBLE PRECISION,closed_at TIMESTAMPTZ,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);await pool.query("ALTER TABLE trade_results ADD COLUMN IF NOT EXISTS entry_touched BOOLEAN NOT NULL DEFAULT FALSE");await pool.query("ALTER TABLE trade_results ADD COLUMN IF NOT EXISTS tp1_touched BOOLEAN NOT NULL DEFAULT FALSE");
+export async function initDb(){if(!pool)return false;const fix=await pool.query("UPDATE trade_results SET status='TP1',exit_price=tp1,pnl_points=entry-tp1,closed_at=NOW() WHERE symbol='XAUUSD' AND side='SELL' AND ABS(entry-4171.217)<0.000001 AND status='SL'");if(fix.rowCount)console.log("HISTORICAL_TRADE_CORRECTED SELL 4171.217 SL->TP1",fix.rowCount);await pool.query("CREATE TABLE IF NOT EXISTS service_heartbeat (service TEXT PRIMARY KEY,last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW())");await pool.query("CREATE TABLE IF NOT EXISTS m5_candles (symbol TEXT NOT NULL,candle_time TIMESTAMPTZ NOT NULL,payload JSONB NOT NULL,received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(symbol,candle_time))");await pool.query("CREATE INDEX IF NOT EXISTS idx_m5_symbol_time ON m5_candles(symbol,candle_time DESC)");
+await pool.query("CREATE TABLE IF NOT EXISTS mtf_candles (symbol TEXT NOT NULL,timeframe TEXT NOT NULL,candle_time TIMESTAMPTZ NOT NULL,payload JSONB NOT NULL,received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),PRIMARY KEY(symbol,timeframe,candle_time))");
+await pool.query("CREATE INDEX IF NOT EXISTS idx_mtf_symbol_tf_time ON mtf_candles(symbol,timeframe,candle_time DESC)");await pool.query(`CREATE TABLE IF NOT EXISTS trade_results (hourly_id TEXT PRIMARY KEY,symbol TEXT NOT NULL,side TEXT NOT NULL,entry DOUBLE PRECISION NOT NULL,stop_loss DOUBLE PRECISION NOT NULL,tp1 DOUBLE PRECISION NOT NULL,tp2 DOUBLE PRECISION NOT NULL,confidence DOUBLE PRECISION,signal_time TIMESTAMPTZ NOT NULL,status TEXT NOT NULL DEFAULT 'OPEN',exit_price DOUBLE PRECISION,pnl_points DOUBLE PRECISION,closed_at TIMESTAMPTZ,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);await pool.query("ALTER TABLE trade_results ADD COLUMN IF NOT EXISTS entry_touched BOOLEAN NOT NULL DEFAULT FALSE");await pool.query("ALTER TABLE trade_results ADD COLUMN IF NOT EXISTS tp1_touched BOOLEAN NOT NULL DEFAULT FALSE");
 await pool.query("ALTER TABLE trade_results ADD COLUMN IF NOT EXISTS lifecycle_status TEXT NOT NULL DEFAULT 'PENDING'");
 await pool.query("ALTER TABLE trade_results ADD COLUMN IF NOT EXISTS lifecycle_reason TEXT");
 await pool.query("ALTER TABLE trade_results ADD COLUMN IF NOT EXISTS lifecycle_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()");
@@ -24,6 +26,34 @@ export async function getHeartbeat(service="MT5"){if(!pool)return null;const r=a
 export async function saveM5Candle(symbol,candle){if(!pool)return false;await pool.query("INSERT INTO m5_candles(symbol,candle_time,payload) VALUES($1,$2,$3::jsonb) ON CONFLICT(symbol,candle_time) DO UPDATE SET payload=EXCLUDED.payload,received_at=NOW()",[symbol,new Date(candle.time).toISOString(),JSON.stringify(candle)]);return true}
 export async function getM5Block(symbol,blockStart){if(!pool)return[];const start=new Date(blockStart),end=new Date(start.getTime()+60*60*1000);const r=await pool.query("SELECT payload FROM m5_candles WHERE symbol=$1 AND candle_time >= $2 AND candle_time < $3 ORDER BY candle_time ASC",[symbol,start.toISOString(),end.toISOString()]);return r.rows.map(x=>x.payload)}
 export async function getCurrentM5Count(symbol,now=new Date()){if(!pool)return null;const start=new Date(now);start.setUTCMinutes(0,0,0);const r=await pool.query("SELECT COUNT(*)::int AS n FROM m5_candles WHERE symbol=$1 AND candle_time >= $2 AND candle_time < $3",[symbol,start.toISOString(),new Date(start.getTime()+3600000).toISOString()]);return r.rows[0]?.n??0}
+
+export async function saveMtfCandles(symbol,timeframe,candles=[]){
+ if(!pool||!Array.isArray(candles)||!candles.length)return 0;
+ const tf=String(timeframe||"").toUpperCase();
+ if(!["M5","M15","H1"].includes(tf))throw new Error("Unsupported timeframe "+tf);
+ const valid=candles.filter(x=>x?.time!=null&&!Number.isNaN(new Date(x.time).getTime()));
+ if(!valid.length)return 0;
+ const times=valid.map(x=>new Date(x.time).toISOString());
+ const payloads=valid.map(x=>JSON.stringify(x));
+ const r=await pool.query(`INSERT INTO mtf_candles(symbol,timeframe,candle_time,payload)
+  SELECT $1,$2,u.candle_time::timestamptz,u.payload::jsonb
+  FROM UNNEST($3::text[],$4::text[]) AS u(candle_time,payload)
+  ON CONFLICT(symbol,timeframe,candle_time) DO UPDATE SET payload=EXCLUDED.payload,received_at=NOW()`,[symbol,tf,times,payloads]);
+ return r.rowCount||0;
+}
+export async function getHistoricalCandles(symbol,timeframe,endTime=new Date(),days=3,limit=600){
+ if(!pool)return[];
+ const tf=String(timeframe||"").toUpperCase();
+ const end=new Date(endTime);
+ if(Number.isNaN(end.getTime()))return[];
+ const d=Math.max(1,Math.min(7,+days||3));
+ const cap=Math.max(1,Math.min(1000,+limit||600));
+ const r=await pool.query(`SELECT payload FROM mtf_candles
+  WHERE symbol=$1 AND timeframe=$2 AND candle_time <= $3
+    AND candle_time >= $3::timestamptz-($4::text||' days')::interval
+  ORDER BY candle_time DESC LIMIT $5`,[symbol,tf,end.toISOString(),String(d),cap]);
+ return r.rows.map(x=>x.payload).reverse();
+}
 
 export async function getTradeJournal(symbol,period="daily",date=new Date().toISOString().slice(0,10)){if(!pool)return null;const unit=period==="monthly"?"month":"day";const r=await pool.query(`SELECT hourly_id,symbol,side,entry,stop_loss,tp1,tp2,confidence,signal_time,status,entry_touched,tp1_touched,lifecycle_status,lifecycle_reason,lifecycle_updated_at,exit_price,pnl_points,closed_at FROM trade_results WHERE symbol=$1 AND signal_time >= date_trunc('${unit}',$2::timestamptz) AND signal_time < date_trunc('${unit}',$2::timestamptz)+INTERVAL '1 ${unit}' ORDER BY signal_time DESC, created_at DESC`,[symbol,date+"T00:00:00Z"]);const rows=r.rows;const closed=rows.filter(t=>["TP1","TP2","SL"].includes(t.status)),wins=closed.filter(t=>t.status==="TP1"||t.status==="TP2").length,losses=closed.filter(t=>t.status==="SL").length;return{period,date,total:rows.length,open:rows.filter(t=>t.status==="OPEN").length,tp1:rows.filter(t=>t.status==="TP1").length,tp2:rows.filter(t=>t.status==="TP2").length,sl:losses,closed:closed.length,wins,losses,winrate:closed.length?+(wins*100/closed.length).toFixed(2):0,pnlPoints:+rows.reduce((a,t)=>a+(+t.pnl_points||0),0).toFixed(2),trades:rows}}
 
