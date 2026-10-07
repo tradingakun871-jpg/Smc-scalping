@@ -114,6 +114,32 @@ export async function getRollingLearningMemory(symbol,{minSamples=20,maxDays=7,l
  return rows;
 }
 
+export async function getLongTermLearningMemory(symbol,{maxDays=90,limit=1000,currentRegime=null}={}){
+ if(!pool)return[];
+ const days=Math.max(7,Math.min(365,+maxDays||90));
+ const cap=Math.max(50,Math.min(2000,+limit||1000));
+ const r=await pool.query(`
+  SELECT l.hourly_id,l.regime,l.strategy,l.context,l.outcome,l.pnl_points,l.review,l.created_at,l.reviewed_at,
+         t.side,t.entry,t.stop_loss,t.tp1,t.tp2,t.confidence,t.signal_time,t.closed_at,
+         GREATEST(0,EXTRACT(EPOCH FROM (NOW()-COALESCE(l.reviewed_at,l.created_at)))/86400.0) AS age_days
+  FROM trade_learning l
+  JOIN trade_results t ON t.hourly_id=l.hourly_id
+  WHERE l.symbol=$1
+    AND l.outcome IN ('TP1_REACHED','TP1','TP2','SL')
+    AND COALESCE(l.reviewed_at,l.created_at) >= NOW()-($2::text||' days')::interval
+  ORDER BY COALESCE(l.reviewed_at,l.created_at) DESC
+  LIMIT $3`,[symbol,String(days),cap]);
+ return r.rows.map(x=>{
+  const age=Math.max(0,Number(x.age_days)||0);
+  // Long-term memory decays more slowly than the tactical 7-day memory.
+  // A floor prevents proven historical patterns from disappearing completely.
+  const timeWeight=Math.max(0.25,Math.pow(0.5,age/14));
+  const regimeMatch=currentRegime&&String(currentRegime)!=="UNKNOWN"&&String(x.regime)===String(currentRegime);
+  const regimeWeight=regimeMatch?1.15:1.00;
+  return {...x,ageDays:+age.toFixed(3),timeWeight:+timeWeight.toFixed(4),regimeWeight,learningWeight:+(timeWeight*regimeWeight).toFixed(4)};
+ });
+}
+
 export async function getTradesBetween(symbol,start,end){
  if(!pool)return[];
  const r=await pool.query("SELECT hourly_id,symbol,side,entry,stop_loss,tp1,tp2,confidence,signal_time,status,entry_touched,tp1_touched,exit_price,pnl_points,closed_at FROM trade_results WHERE symbol=$1 AND signal_time >= $2::timestamptz AND signal_time < $3::timestamptz ORDER BY signal_time ASC",[symbol,start,end]);
