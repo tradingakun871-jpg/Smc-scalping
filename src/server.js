@@ -417,6 +417,15 @@ const cancelledShadow=await getCancelledShadowLearning(key,{maxDays:90,limit:100
 const adaptiveProfile=buildAdaptiveProfile(learningMemory);
 adaptiveProfile.cancelledSetupLearning=buildCancelledLearningProfile(cancelledMemory);
 adaptiveProfile.cancelledSetupLearning.counterfactual={samples:cancelledShadow.length,entryRetouched:cancelledShadow.filter(x=>x.entry_touched_after_cancel).length,tp1:cancelledShadow.filter(x=>x.shadow_outcome==='TP1').length,tp2:cancelledShadow.filter(x=>x.shadow_outcome==='TP2').length,sl:cancelledShadow.filter(x=>x.shadow_outcome==='SL').length,notRetouched:cancelledShadow.filter(x=>x.shadow_outcome==='ENTRY_NOT_RETOUCHED').length,recent:cancelledShadow.slice(0,20).map(x=>({hourlyId:x.hourly_id,reason:x.cancel_reason,side:x.side,strategy:x.strategy,regime:x.regime,outcome:x.shadow_outcome,entryRetouched:x.entry_touched_after_cancel}))};
+const shadowFinal=cancelledShadow.filter(x=>['TP1','TP2','SL'].includes(x.shadow_outcome));
+const shadowWins=shadowFinal.filter(x=>['TP1','TP2'].includes(x.shadow_outcome)).length,shadowLosses=shadowFinal.filter(x=>x.shadow_outcome==='SL').length;
+adaptiveProfile.cancelledSetupLearning.feedback={
+ shadowFinalSamples:shadowFinal.length,
+ shadowWinRatePct:shadowFinal.length?+(shadowWins*100/shadowFinal.length).toFixed(1):null,
+ cancellationBias:shadowFinal.length<5?'OBSERVE':shadowWins/shadowFinal.length>=0.65?'TOO_AGGRESSIVE_REVIEW_REACHABILITY':shadowLosses/shadowFinal.length>=0.60?'PROTECTIVE_KEEP_SAFETY':'BALANCED',
+ rule:"Apply only when repeated evidence exists. Shadow winners may relax reachability/timing ranking only when live structure remains valid; shadow losses reinforce cancellation safety. Never change SL/RR/risk or resurrect cancelled trades."
+};
+// Historical learning includes Sep 30 onward through the 90-day memory; recent 7-day evidence remains dominant.
 const longTermProfile=buildAdaptiveProfile(longTermMemory);
 adaptiveProfile.longTermLearning={
  windowDays:90,
