@@ -290,9 +290,35 @@ export async function getLongTermLearningMemory(symbol,{maxDays=90,limit=1000,cu
  });
 }
 
+export async function getCancelledLearningMemory(symbol,{maxDays=90,limit=500,currentRegime=null}={}){
+ if(!pool)return[];
+ const days=Math.max(7,Math.min(365,+maxDays||90));
+ const cap=Math.max(20,Math.min(2000,+limit||500));
+ const r=await pool.query(`
+  SELECT t.hourly_id,t.symbol,t.side,t.entry,t.stop_loss,t.tp1,t.tp2,t.confidence,t.signal_time,t.status,
+         t.lifecycle_status,t.lifecycle_reason,t.lifecycle_updated_at,t.closed_at,
+         l.regime,l.strategy,l.context,l.review,l.reviewed_at,
+         GREATEST(0,EXTRACT(EPOCH FROM (NOW()-COALESCE(l.reviewed_at,t.lifecycle_updated_at,t.signal_time)))/86400.0) AS age_days
+  FROM trade_results t
+  LEFT JOIN trade_learning l ON l.hourly_id=t.hourly_id
+  WHERE t.symbol=$1
+    AND (t.status='CANCELLED' OR t.lifecycle_status='CANCELLED')
+    AND t.signal_time >= NOW()-($2::text||' days')::interval
+  ORDER BY COALESCE(l.reviewed_at,t.lifecycle_updated_at,t.signal_time) DESC
+  LIMIT $3`,[symbol,String(days),cap]);
+ return r.rows.map(x=>{
+  const age=Math.max(0,Number(x.age_days)||0);
+  const timeWeight=Math.max(0.25,Math.pow(0.5,age/14));
+  const regimeMatch=currentRegime&&String(currentRegime)!=="UNKNOWN"&&String(x.regime)===String(currentRegime);
+  const regimeWeight=regimeMatch?1.15:1.00;
+  return {...x,ageDays:+age.toFixed(3),timeWeight:+timeWeight.toFixed(4),regimeWeight,learningWeight:+(timeWeight*regimeWeight).toFixed(4)};
+ });
+}
+
+
 export async function getTradesBetween(symbol,start,end){
  if(!pool)return[];
- const r=await pool.query("SELECT hourly_id,symbol,side,entry,stop_loss,tp1,tp2,confidence,signal_time,status,entry_touched,tp1_touched,exit_price,pnl_points,closed_at FROM trade_results WHERE symbol=$1 AND signal_time >= $2::timestamptz AND signal_time < $3::timestamptz ORDER BY signal_time ASC",[symbol,start,end]);
+ const r=await pool.query("SELECT hourly_id,symbol,side,entry,stop_loss,tp1,tp2,confidence,signal_time,status,entry_touched,tp1_touched,lifecycle_status,lifecycle_reason,lifecycle_updated_at,exit_price,pnl_points,closed_at FROM trade_results WHERE symbol=$1 AND signal_time >= $2::timestamptz AND signal_time < $3::timestamptz ORDER BY signal_time ASC",[symbol,start,end]);
  return r.rows;
 }
 export async function getLearningSummary(symbol){
