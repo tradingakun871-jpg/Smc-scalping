@@ -332,6 +332,28 @@ export async function getTradesBetween(symbol,start,end){
  const r=await pool.query("SELECT hourly_id,symbol,side,entry,stop_loss,tp1,tp2,confidence,signal_time,status,entry_touched,tp1_touched,lifecycle_status,lifecycle_reason,lifecycle_updated_at,exit_price,pnl_points,closed_at FROM trade_results WHERE symbol=$1 AND signal_time >= $2::timestamptz AND signal_time < $3::timestamptz ORDER BY signal_time ASC",[symbol,start,end]);
  return r.rows;
 }
+export async function getLearningBaseline(symbol,start="2026-09-30T00:00:00Z",end="2026-10-08T00:00:00Z"){
+ if(!pool)return[];
+ const r=await pool.query(`
+ SELECT l.hourly_id,l.symbol,l.regime,l.strategy,l.context,l.outcome,l.pnl_points,l.review,l.created_at,l.reviewed_at,
+ t.side,t.entry,t.stop_loss,t.tp1,t.tp2,t.confidence,t.signal_time,t.closed_at,
+ 1.0::float AS "learningWeight"
+ FROM trade_learning l JOIN trade_results t ON t.hourly_id=l.hourly_id
+ WHERE l.symbol=$1 AND l.outcome IN ('TP1','TP2','SL')
+ AND t.signal_time >= $2::timestamptz AND t.signal_time < $3::timestamptz
+ ORDER BY t.signal_time ASC`,[symbol,start,end]);
+ return r.rows;
+}
+export async function getCancelledShadowBaseline(symbol,start="2026-09-30T00:00:00Z",end="2026-10-08T00:00:00Z"){
+ if(!pool)return[];
+ const r=await pool.query(`SELECT s.*,t.side,t.entry,t.stop_loss,t.tp1,t.tp2,t.confidence,t.signal_time,l.regime,l.strategy,l.context
+ FROM cancelled_shadow_learning s JOIN trade_results t ON t.hourly_id=s.hourly_id
+ LEFT JOIN trade_learning l ON l.hourly_id=s.hourly_id
+ WHERE s.symbol=$1 AND t.signal_time >= $2::timestamptz AND t.signal_time < $3::timestamptz
+ ORDER BY t.signal_time ASC`,[symbol,start,end]);
+ return r.rows;
+}
+
 export async function getLearningSummary(symbol){
  if(!pool)return[];
  const r=await pool.query(`SELECT COALESCE(regime,'UNKNOWN') regime,COALESCE(strategy,'UNKNOWN') strategy,COUNT(*)::int samples,COUNT(*) FILTER(WHERE outcome IN ('TP1','TP2'))::int wins,COUNT(*) FILTER(WHERE outcome='SL')::int losses,COALESCE(SUM(pnl_points),0)::float pnl_points FROM trade_learning WHERE symbol=$1 AND outcome IN ('TP1','TP2','SL') GROUP BY 1,2 ORDER BY samples DESC,pnl_points DESC`,[symbol]);
