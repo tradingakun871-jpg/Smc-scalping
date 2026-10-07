@@ -1,9 +1,9 @@
 import express from "express";
 import crypto from "crypto";
 import {analyzeSMC,analyzeRollingM5} from "./smc.js";
-import {aiDecision,reviewTrade} from "./ai.js";
+import {aiDecision,reviewTrade,reviewPendingSetup} from "./ai.js";
 import {getFundamental} from "./fundamental.js";
-import {initDb,checkDb,touchHeartbeat,getHeartbeat,saveM5Candle,getM5Block,getCurrentM5Count,saveMtfCandles,getHistoricalCandles,saveTradeSignal,updateOpenTrades,updateOpenTradesFromPrice,getTradeStats,getTradeJournal,getLatestOpenTrade,hasTradeSignal,normalizeLegacyHourlySignals,getLatestTrade,saveTradeLearningContext,saveTradeReview,getLearningMemory,getRollingLearningMemory,getLongTermLearningMemory,getTradesBetween,getLearningSummary,evaluatePendingSetups} from "./db.js";
+import {initDb,checkDb,touchHeartbeat,getHeartbeat,saveM5Candle,getM5Block,getCurrentM5Count,saveMtfCandles,getHistoricalCandles,saveTradeSignal,updateOpenTrades,updateOpenTradesFromPrice,getTradeStats,getTradeJournal,getLatestOpenTrade,hasTradeSignal,normalizeLegacyHourlySignals,getLatestTrade,saveTradeLearningContext,saveTradeReview,getLearningMemory,getRollingLearningMemory,getLongTermLearningMemory,getTradesBetween,getLearningSummary,evaluatePendingSetups,resolvePendingSetupReview} from "./db.js";
 const app=express();app.use(express.json({limit:"1mb"}));app.use(express.static("public"));
 const buffers=new Map(),lastSignal=new Map(),latest=new Map(),aiRuntime=new Map(),livePrice=new Map(),lastM5Ingest=new Map();let lastMt5At=0;
 const minTech=Number(process.env.MIN_TECHNICAL_SCORE||70),minFinal=Number(process.env.MIN_FINAL_SCORE||70);
@@ -80,16 +80,71 @@ async function sendTelegramLifecycle(symbol,t,review=null){
  const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;
  if(!token||!chatId)return{sent:false,reason:"TELEGRAM_NOT_CONFIGURED"};
  const status=String(t?.status||t?.lifecycle_status||"REVIEW");
- const labels={ENTRY_TOUCHED:"✅ ENTRY VALID / ACTIVE",CANCELLED:"❌ ENTRY CANCELLED",TP1_REACHED:"🟢 REVIEW TP1 REACHED",TP1:"🟢 REVIEW TP1",TP2:"🏆 REVIEW TP2",SL:"🔴 REVIEW SL"};
+ const labels={ENTRY_TOUCHED:"✅ ENTRY VALID / ACTIVE",SETUP_VALID:"✅ SETUP VALID / DIPERTAHANKAN",CANCELLED:"❌ ENTRY CANCELLED",TP1_REACHED:"🟢 REVIEW TP1 REACHED",TP1:"🟢 REVIEW TP1",TP2:"🏆 REVIEW TP2",SL:"🔴 REVIEW SL"};
  const lines=["🔄 AI TRADE REVIEW UPDATE",symbol+" • "+(t?.side||"—"),"",labels[status]||("Status: "+status),"Signal: "+(t?.hourly_id||"—"),"Entry: "+(t?.entry??"—"),"SL: "+(t?.stop_loss??"—"),"TP1: "+(t?.tp1??"—"),"TP2: "+(t?.tp2??"—")];
  if(t?.lifecycle_reason)lines.push("Lifecycle: "+t.lifecycle_reason);
  if(review){lines.push("","🧠 AI REVIEW","Regime: "+(review.marketRegime||"—"),"Method: "+(review.strategyUsed||"—"),"Cause: "+(review.primaryCause||"—"),"Lesson: "+(review.lesson||"—"));}
  if(status==="CANCELLED")lines.push("","Catatan: dibatalkan sebelum entry; tidak dihitung WIN/LOSS.");
- if(status==="ENTRY_TOUCHED")lines.push("","Catatan: harga menyentuh entry; setup menjadi ACTIVE. Ini belum WIN/LOSS.");
+ if(status==="ENTRY_TOUCHED")lines.push("","Catatan: harga menyentuh entry; setup menjadi ACTIVE. Ini belum WIN/LOSS.");if(status==="SETUP_VALID")lines.push("","Catatan: target sempat terlewati sebelum entry, tetapi AI menilai setup masih fresh, valid, reachable, dan probability masih tinggi. Level asli tetap digunakan.");
  const resp=await fetch("https://api.telegram.org/bot"+token+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:lines.join("\n")})});
  if(!resp.ok)throw new Error("Telegram lifecycle HTTP "+resp.status);
  return{sent:true};
 }
+async function handlePendingSetupEvents(symbol,events=[]){
+ for(const t of events){
+  if(t?.status==="CANCELLED"){
+   await saveTradeReview(t.hourly_id,"CANCELLED",0,{reviewStage:"PENDING_FINAL",primaryCause:t.lifecycle_reason,lesson:"Setup belum entry dan dibatalkan karena expiry/invalidation. Tidak dihitung WIN/LOSS."}).catch(()=>{});
+   console.log("PENDING_SETUP_CANCELLED",symbol,t.hourly_id,t.lifecycle_reason);
+   try{await sendTelegramLifecycle(symbol,t)}catch(te){console.error("Telegram cancel update failed",te.message)}
+   continue;
+  }
+  if(t?.status!=="REVIEW_REQUIRED")continue;
+  try{
+   const now=new Date(),blockStart=new Date();blockStart.setUTCMinutes(0,0,0);
+   const [histH1,histM15,histM5,currentM5,memory]=await Promise.all([
+    getHistoricalCandles(symbol,"H1",now,3,72).catch(()=>[]),
+    getHistoricalCandles(symbol,"M15",now,3,288).catch(()=>[]),
+    getHistoricalCandles(symbol,"M5",now,3,864).catch(()=>[]),
+    getM5Block(symbol,blockStart).catch(()=>[]),
+    getLearningMemory(symbol,100).catch(()=>[])
+   ]);
+   const prior=memory.find(x=>x.hourly_id===t.hourly_id);
+   const compact=(arr,n)=>arr.slice(-n).map(x=>[x.time,x.open,x.high,x.low,x.close]);
+   const aiReview=await reviewPendingSetup({
+    symbol,
+    hourlyId:t.hourly_id,
+    side:t.side,
+    original:{entry:+t.entry,stopLoss:+t.stop_loss,tp1:+t.tp1,tp2:+t.tp2,confidence:t.confidence,signalTime:t.signal_time},
+    currentPrice:Number(t.review_price),
+    signalContext:prior?.context||{},
+    currentMarket:{
+     h1:compact(histH1,36),
+     m15:compact(histM15,64),
+     m5:compact(histM5,96),
+     currentM5Block:compact(currentM5,12)
+    },
+    policy:{keepProbabilityMin:70,levelsMustRemainUnchanged:true,requireFresh:true,requireStructuralValid:true,requireReachable:true}
+   });
+   const probability=Math.max(0,Math.min(100,Number(aiReview?.probability)||0));
+   const keep=String(aiReview?.decision||"").toUpperCase()==="KEEP" && probability>=70 && aiReview?.fresh===true && aiReview?.structuralValid===true && aiReview?.reachable===true;
+   const resolved=await resolvePendingSetupReview(t.hourly_id,keep?"KEEP":"CANCEL",{probability,reason:aiReview?.reason||aiReview?.invalidationRisk||"STALE_OR_LOW_PROBABILITY"});
+   if(keep){
+    console.log("PENDING_SETUP_RETAINED",symbol,t.hourly_id,JSON.stringify({probability:+probability.toFixed(1),fresh:aiReview.fresh,structuralValid:aiReview.structuralValid,reachable:aiReview.reachable,regime:aiReview.marketRegime,reason:aiReview.reason}));
+    try{await sendTelegramLifecycle(symbol,{...resolved,status:"SETUP_VALID"},aiReview)}catch(te){console.error("Telegram pending-valid update failed",te.message)}
+   }else{
+    const cancelled={...resolved,status:"CANCELLED"};
+    await saveTradeReview(t.hourly_id,"CANCELLED",0,{...aiReview,reviewStage:"TARGET_PASSED_PENDING_FINAL",primaryCause:"TARGET_PASSED_AI_CANCELLED",lesson:"Target sudah terlewati sebelum entry dan AI menilai setup tidak lagi fresh/valid/reachable atau probability di bawah 70%. Tidak dihitung WIN/LOSS."}).catch(()=>{});
+    console.log("PENDING_SETUP_AI_CANCELLED",symbol,t.hourly_id,JSON.stringify({probability:+probability.toFixed(1),fresh:aiReview?.fresh,structuralValid:aiReview?.structuralValid,reachable:aiReview?.reachable,regime:aiReview?.marketRegime,reason:aiReview?.reason}));
+    try{await sendTelegramLifecycle(symbol,cancelled,aiReview)}catch(te){console.error("Telegram pending-cancel update failed",te.message)}
+   }
+  }catch(e){
+   console.error("PENDING_SETUP_AI_REVIEW_ERROR",symbol,t?.hourly_id,e.message);
+   // Fail safe: keep it in REVIEW_REQUIRED so the next heartbeat can retry;
+   // never silently reactivate a target-passed setup when AI review failed.
+  }
+ }
+}
+
 async function learnFromClosedTrades(symbol,events=[]){
  for(const t of events){
   if(!["TP1_REACHED","TP2","SL"].includes(t?.status))continue;
@@ -238,7 +293,7 @@ app.get("/api/learning/summary",async(req,res)=>{try{const symbol=String(req.que
 app.get("/api/trades/journal",async(req,res)=>{try{res.json(await getTradeJournal(String(req.query.symbol||"XAUUSD").toUpperCase(),req.query.period==="monthly"?"monthly":"daily",String(req.query.date||new Date().toISOString().slice(0,10))))}catch(e){res.status(500).json({error:e.message})}});
 app.get("/api/trades/stats",async(req,res)=>{try{res.json(await getTradeStats(String(req.query.symbol||"XAUUSD").toUpperCase()))}catch(e){res.status(500).json({error:e.message})}});
 app.get("/api/fundamental",async(req,res)=>{try{res.json(await getFundamental())}catch(e){res.status(503).json({status:"ERROR",error:e.message})}});
-app.post("/api/mt5/heartbeat",bridgeAuth,async(req,res)=>{lastMt5At=Date.now();const key=String(req.body?.symbol||"XAUUSD").toUpperCase();const px=Number(req.body?.price??req.body?.bid??req.body?.last);if(Number.isFinite(px)){livePrice.set(key,{price:px,at:new Date().toISOString()});try{const tradeEvents=await updateOpenTradesFromPrice(key,px);for(const t of tradeEvents.filter(x=>x?.status==="ENTRY_TOUCHED")){try{await sendTelegramLifecycle(key,t)}catch(te){console.error("Telegram entry update failed",te.message)}}await learnFromClosedTrades(key,tradeEvents);const pendingEvents=await evaluatePendingSetups(key,px);for(const t of pendingEvents){await saveTradeReview(t.hourly_id,"CANCELLED",0,{reviewStage:"PENDING_FINAL",primaryCause:t.lifecycle_reason,lesson:"Setup was never entered. Learn entry reachability/invalidation without counting it as WIN or LOSS."});console.log("PENDING_SETUP_CANCELLED",key,t.hourly_id,t.lifecycle_reason);try{await sendTelegramLifecycle(key,t)}catch(te){console.error("Telegram cancel update failed",te.message)}}}catch(e){console.error("LIVE trade tracking/db write",e.message)}}let closedM5=(buffers.get(key)||[]).length;try{await touchHeartbeat("MT5");const n=await getCurrentM5Count(key);if(n!=null)closedM5=n}catch(e){console.error("heartbeat db",e.message)}const now=new Date(),expected=Math.floor(now.getUTCMinutes()/5);res.json({status:"ONLINE",serverTime:new Date(lastMt5At).toISOString(),closedM5,expectedClosedM5:expected,resyncRequired:closedM5<expected});});
+app.post("/api/mt5/heartbeat",bridgeAuth,async(req,res)=>{lastMt5At=Date.now();const key=String(req.body?.symbol||"XAUUSD").toUpperCase();const px=Number(req.body?.price??req.body?.bid??req.body?.last);if(Number.isFinite(px)){livePrice.set(key,{price:px,at:new Date().toISOString()});try{const tradeEvents=await updateOpenTradesFromPrice(key,px);for(const t of tradeEvents.filter(x=>x?.status==="ENTRY_TOUCHED")){try{await sendTelegramLifecycle(key,t)}catch(te){console.error("Telegram entry update failed",te.message)}}await learnFromClosedTrades(key,tradeEvents);const pendingEvents=await evaluatePendingSetups(key,px);await handlePendingSetupEvents(key,pendingEvents);}catch(e){console.error("LIVE trade tracking/db write",e.message)}}let closedM5=(buffers.get(key)||[]).length;try{await touchHeartbeat("MT5");const n=await getCurrentM5Count(key);if(n!=null)closedM5=n}catch(e){console.error("heartbeat db",e.message)}const now=new Date(),expected=Math.floor(now.getUTCMinutes()/5);res.json({status:"ONLINE",serverTime:new Date(lastMt5At).toISOString(),closedM5,expectedClosedM5:expected,resyncRequired:closedM5<expected});});
 app.get("/api/price",async(req,res)=>{const key=String(req.query.symbol||"XAUUSD").toUpperCase();let p=livePrice.get(key)||null;if(!p){try{const j=await getTradeJournal(key,"daily",new Date().toISOString().slice(0,10));const t=j?.trades?.at(-1);if(t)p={price:t.exit_price??t.entry,at:t.closed_at??t.signal_time,source:"LAST_SIGNAL"}}catch{}}res.json({symbol:key,...(p||{price:null,at:null}),source:p?.source||"MT5"});});
 app.post("/api/telegram/test",bridgeAuth,async(req,res)=>{try{const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;if(!token||!chatId)return res.status(503).json({ok:false,error:"Telegram not configured"});const r=await fetch("https://api.telegram.org/bot"+token+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:"✅ AI SMC Telegram TEST — koneksi berhasil. Ini bukan sinyal trading."})});const j=await r.json().catch(()=>({}));res.status(r.ok&&j.ok?200:502).json({ok:!!(r.ok&&j.ok),telegramHttp:r.status});}catch(e){res.status(502).json({ok:false,error:e.message})}});
 app.get("/api/status",async(req,res)=>{const key=String(req.query.symbol||"XAUUSD").toUpperCase();let closedM5=(buffers.get(key)||[]).length;try{const n=await getCurrentM5Count(key);if(n!=null)closedM5=n}catch(e){console.error("M5 status db read",e.message)}const current=latest.get(key)||null;let activeTrade=null,latestTrade=null;try{activeTrade=await getLatestOpenTrade(key);latestTrade=await getLatestTrade(key)}catch(e){console.error("trade db read",e.message)}const mem=aiRuntime.get(key);const ar={state:mem?.state==="AI_COMPLETED"?"WAITING_H1_CLOSE":(mem?.state||"WAITING_H1_CLOSE"),aiCalled:!!latestTrade||!!mem?.aiCalled,lastAiAt:latestTrade?.signal_time||mem?.lastAiAt||null,lastDecision:latestTrade?.side||mem?.lastDecision||null};const hourly=!!latestTrade||current?.mode==="HOURLY_D1_MTF_ANALYSIS";res.json({symbol:key,activeTrade,latestTrade,engine:"D1_H1_M15_M5_HOURLY",trigger:"CLOSED_H1",monitor:{d1:"CONTEXT",h1:hourly?"ANALYZED":"WAITING_CLOSE",m15:hourly?"CONFIRMED":"WAITING_H1",m5:hourly?"EXECUTION_CHECKED":"WAITING_H1"},legacyM5:{closed:closedM5,required:12,ingestOnly:true},aiRuntime:ar,latest:current});});
@@ -273,7 +328,7 @@ app.post("/api/mtf/analyze",bridgeAuth,async(req,res)=>{try{
  let fund=fundamental;if(!Number.isFinite(Number(fund.score)))fund=await getFundamental();
  const fundamentalScore=Number.isFinite(Number(fund.score))?Number(fund.score):null;
  const weightedScore=fundamentalScore==null?+(techScore*.7).toFixed(2):+(techScore*.7+fundamentalScore*.3).toFixed(2);
- const px=Number(livePrice.get(key)?.price);if(Number.isFinite(px)){const pendingEvents=await evaluatePendingSetups(key,px).catch(()=>[]);for(const t of pendingEvents){await saveTradeReview(t.hourly_id,"CANCELLED",0,{reviewStage:"PENDING_FINAL",primaryCause:t.lifecycle_reason,lesson:"Untouched setup invalidated or target reached before entry; use this to improve entry reachability, but exclude from winrate/PnL."}).catch(()=>{});console.log("PENDING_SETUP_CANCELLED",key,t.hourly_id,t.lifecycle_reason);try{await sendTelegramLifecycle(key,t)}catch(te){console.error("Telegram cancel update failed",te.message)}}}
+ const px=Number(livePrice.get(key)?.price);if(Number.isFinite(px)){const pendingEvents=await evaluatePendingSetups(key,px).catch(()=>[]);await handlePendingSetupEvents(key,pendingEvents);}
  // Bootstrap from recent finalized outcomes: today first, then up to 7 days.
  // The DB attaches time-decay weights; after a preliminary profile we re-rank
  // same-regime examples so current market conditions matter more than stale history.
