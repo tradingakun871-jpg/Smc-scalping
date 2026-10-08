@@ -453,6 +453,8 @@ export async function resolvePendingSetupReview(hourlyId,resolution,{probability
 export async function updateCancelledShadowLearning(symbol,candle){
  if(!pool)return[];
  const hi=Number(candle?.high),lo=Number(candle?.low),ct=candle?.time?new Date(candle.time):new Date();
+ // Shadow is only meaningful within the originating market session (22:00-21:00 UTC).
+ const marketSessionClose=(date)=>{const d=new Date(date);const hour=d.getUTCHours();d.setUTCHours(21,0,0,0);if(hour>=22)d.setUTCDate(d.getUTCDate()+1);return d;};
  if(!Number.isFinite(hi)||!Number.isFinite(lo)||Number.isNaN(ct.getTime()))return[];
  const r=await pool.query(`
   SELECT t.*,s.entry_touched_after_cancel,s.shadow_tp1_touched,s.shadow_outcome
@@ -460,6 +462,7 @@ export async function updateCancelledShadowLearning(symbol,candle){
   LEFT JOIN cancelled_shadow_learning s ON s.hourly_id=t.hourly_id
   WHERE t.symbol=$1 AND (t.status='CANCELLED' OR t.lifecycle_status='CANCELLED')
     AND COALESCE(t.closed_at,t.lifecycle_updated_at) <= $2::timestamptz
+    AND $2::timestamptz < (date_trunc('day',COALESCE(t.closed_at,t.lifecycle_updated_at) - interval '22 hours') + interval '1 day 21 hours')
     AND COALESCE(s.shadow_outcome,'ENTRY_NOT_RETOUCHED') NOT IN ('TP2','SL')
   ORDER BY COALESCE(t.closed_at,t.lifecycle_updated_at) ASC`,[symbol,ct.toISOString()]);
  const events=[];
