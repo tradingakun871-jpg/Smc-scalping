@@ -29,7 +29,11 @@ async function telegramBroadcast(text){
   }catch(e){results.push({chatIdMasked:String(chatId).slice(-6),ok:false,http:null,error:e.message})}
  }
  const ok=results.filter(x=>x.ok).length;
- if(!ok)throw new Error("Telegram broadcast failed for all destinations");
+ if(ok!==results.length){
+  const failures=results.filter(x=>!x.ok);
+  console.error("TELEGRAM_BROADCAST_PARTIAL_FAILURE",JSON.stringify({success:ok,total:results.length,failures}));
+  throw new Error("Telegram broadcast incomplete: "+ok+"/"+results.length+" destinations delivered");
+ }
  return{sent:true,success:ok,total:results.length,results};
 }
 
