@@ -10,6 +10,29 @@ const minTech=Number(process.env.MIN_TECHNICAL_SCORE||70),minFinal=Number(proces
 function bridgeAuth(req,res,next){const expected=process.env.BRIDGE_TOKEN;if(!expected)return res.status(503).json({error:"BRIDGE_TOKEN not configured"});const auth=req.get("authorization")||"";const token=auth.startsWith("Bearer ")?auth.slice(7):"";const a=Buffer.from(token),b=Buffer.from(expected);if(a.length!==b.length||!crypto.timingSafeEqual(a,b))return res.status(401).json({error:"Unauthorized bridge"});next();}
 
 
+function telegramDestinations(){
+ const ids=[process.env.TELEGRAM_CHAT_ID,process.env.TELEGRAM_GROUP_CHAT_ID]
+  .flatMap(v=>String(v||"").split(","))
+  .map(v=>v.trim())
+  .filter(Boolean);
+ return [...new Set(ids)];
+}
+async function telegramBroadcast(text){
+ const token=process.env.TELEGRAM_BOT_TOKEN,chatIds=telegramDestinations();
+ if(!token||!chatIds.length)return{sent:false,reason:"TELEGRAM_NOT_CONFIGURED",destinations:0};
+ const results=[];
+ for(const chatId of chatIds){
+  try{
+   const resp=await fetch("https://api.telegram.org/bot"+token+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text})});
+   const body=await resp.json().catch(()=>({}));
+   results.push({chatIdMasked:String(chatId).slice(-6),ok:!!(resp.ok&&body.ok),http:resp.status,error:body?.description||null});
+  }catch(e){results.push({chatIdMasked:String(chatId).slice(-6),ok:false,http:null,error:e.message})}
+ }
+ const ok=results.filter(x=>x.ok).length;
+ if(!ok)throw new Error("Telegram broadcast failed for all destinations");
+ return{sent:true,success:ok,total:results.length,results};
+}
+
 function calculateTargetProbabilities(record,result){
  const side=result?.decision;
  if(!["BUY","SELL"].includes(side))return result;
@@ -34,8 +57,7 @@ async function sendTelegramSignal(symbol,record){
  const r=record?.result;
  const hourly=record?.mode==="HOURLY_D1_MTF_ANALYSIS";
  if(!r||(!hourly&&!["BUY","SELL"].includes(r.decision)))return{sent:false,reason:"NO_SIGNAL"};
- const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;
- if(!token||!chatId)return{sent:false,reason:"TELEGRAM_NOT_CONFIGURED"};
+
  const msg=[
  "🤖 AI XAUUSD ANALYSIS",
  symbol+" • "+r.decision,
@@ -72,13 +94,10 @@ async function sendTelegramSignal(symbol,record){
  "",
  "Status: AI COMPLETED"
  ].join("\n");
- const resp=await fetch("https://api.telegram.org/bot"+token+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:msg})});
- if(!resp.ok)throw new Error("Telegram HTTP "+resp.status);
- return{sent:true};
+ return await telegramBroadcast(msg);
 }
 async function sendTelegramLifecycle(symbol,t,review=null){
- const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;
- if(!token||!chatId)return{sent:false,reason:"TELEGRAM_NOT_CONFIGURED"};
+
  const status=String(t?.status||t?.lifecycle_status||"REVIEW");
  const labels={ENTRY_TOUCHED:"✅ ENTRY VALID / ACTIVE",SETUP_VALID:"✅ SETUP VALID / DIPERTAHANKAN",CANCELLED:"❌ ENTRY CANCELLED",TP1_REACHED:"🟢 REVIEW TP1 REACHED",TP1:"🟢 REVIEW TP1",TP2:"🏆 REVIEW TP2",SL:"🔴 REVIEW SL"};
  const lines=["🔄 AI TRADE REVIEW UPDATE",symbol+" • "+(t?.side||"—"),"",labels[status]||("Status: "+status),"Signal: "+(t?.hourly_id||"—"),"Entry: "+(t?.entry??"—"),"SL: "+(t?.stop_loss??"—"),"TP1: "+(t?.tp1??"—"),"TP2: "+(t?.tp2??"—")];
@@ -86,9 +105,7 @@ async function sendTelegramLifecycle(symbol,t,review=null){
  if(review){lines.push("","🧠 AI REVIEW","Regime: "+(review.marketRegime||"—"),"Method: "+(review.strategyUsed||"—"),"Cause: "+(review.primaryCause||"—"),"Lesson: "+(review.lesson||"—"));}
  if(status==="CANCELLED")lines.push("","Catatan: dibatalkan sebelum entry; tidak dihitung WIN/LOSS.");
  if(status==="ENTRY_TOUCHED")lines.push("","Catatan: harga menyentuh entry; setup menjadi ACTIVE. Ini belum WIN/LOSS.");if(status==="TP1_REACHED")lines.push("","Catatan: TP1 tercapai; proteksi tracker berpindah ke BE (harga entry) sambil menunggu TP2 atau retrace BE.");if(status==="SETUP_VALID")lines.push("","Catatan: target sempat terlewati sebelum entry, tetapi AI menilai setup masih fresh, valid, reachable, dan probability masih tinggi. Level asli tetap digunakan.");
- const resp=await fetch("https://api.telegram.org/bot"+token+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:lines.join("\n")})});
- if(!resp.ok)throw new Error("Telegram lifecycle HTTP "+resp.status);
- return{sent:true};
+ return await telegramBroadcast(lines.join("\n"));
 }
 async function handlePendingSetupEvents(symbol,events=[]){
  for(const t of events){
@@ -340,7 +357,7 @@ app.get("/api/trades/stats",async(req,res)=>{try{res.json(await getTradeStats(St
 app.get("/api/fundamental",async(req,res)=>{try{res.json(await getFundamental())}catch(e){res.status(503).json({status:"ERROR",error:e.message})}});
 app.post("/api/mt5/heartbeat",bridgeAuth,async(req,res)=>{lastMt5At=Date.now();const key=String(req.body?.symbol||"XAUUSD").toUpperCase();const px=Number(req.body?.price??req.body?.bid??req.body?.last);if(Number.isFinite(px)){livePrice.set(key,{price:px,at:new Date().toISOString()});try{const pendingEvents=await evaluatePendingSetups(key,px);await handlePendingSetupEvents(key,pendingEvents);const tradeEvents=await updateOpenTradesFromPrice(key,px);await handlePendingSetupEvents(key,tradeEvents.filter(x=>x?.status==="CANCELLED"));for(const t of tradeEvents.filter(x=>x?.status==="ENTRY_TOUCHED")){try{await sendTelegramLifecycle(key,t)}catch(te){console.error("Telegram entry update failed",te.message)}}await learnFromClosedTrades(key,tradeEvents);}catch(e){console.error("LIVE trade tracking/db write",e.message)}}let closedM5=(buffers.get(key)||[]).length;try{await touchHeartbeat("MT5");const n=await getCurrentM5Count(key);if(n!=null)closedM5=n}catch(e){console.error("heartbeat db",e.message)}const now=new Date(),expected=Math.floor(now.getUTCMinutes()/5);res.json({status:"ONLINE",serverTime:new Date(lastMt5At).toISOString(),closedM5,expectedClosedM5:expected,resyncRequired:closedM5<expected});});
 app.get("/api/price",async(req,res)=>{const key=String(req.query.symbol||"XAUUSD").toUpperCase();let p=livePrice.get(key)||null;if(!p){try{const wibDate=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Jakarta",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());const j=await getTradeJournal(key,"daily",wibDate);const t=j?.trades?.at(-1);if(t)p={price:t.exit_price??t.entry,at:t.closed_at??t.signal_time,source:"LAST_SIGNAL"}}catch{}}res.json({symbol:key,...(p||{price:null,at:null}),source:p?.source||"MT5"});});
-app.post("/api/telegram/test",bridgeAuth,async(req,res)=>{try{const token=process.env.TELEGRAM_BOT_TOKEN,chatId=process.env.TELEGRAM_CHAT_ID;if(!token||!chatId)return res.status(503).json({ok:false,error:"Telegram not configured"});const r=await fetch("https://api.telegram.org/bot"+token+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:"✅ AI SMC Telegram TEST — koneksi berhasil. Ini bukan sinyal trading."})});const j=await r.json().catch(()=>({}));res.status(r.ok&&j.ok?200:502).json({ok:!!(r.ok&&j.ok),telegramHttp:r.status});}catch(e){res.status(502).json({ok:false,error:e.message})}});
+app.post("/api/telegram/test",bridgeAuth,async(req,res)=>{try{const r=await telegramBroadcast("✅ AI SMC Telegram TEST — koneksi berhasil. Ini bukan sinyal trading.");res.status(r.sent?200:503).json({ok:!!r.sent,success:r.success||0,total:r.total||0,reason:r.reason||null,results:r.results||[]});}catch(e){res.status(502).json({ok:false,error:e.message})}});
 app.get("/api/status",async(req,res)=>{const key=String(req.query.symbol||"XAUUSD").toUpperCase();let closedM5=(buffers.get(key)||[]).length;try{const n=await getCurrentM5Count(key);if(n!=null)closedM5=n}catch(e){console.error("M5 status db read",e.message)}const current=latest.get(key)||null;let activeTrade=null,latestTrade=null;try{activeTrade=await getLatestOpenTrade(key);latestTrade=await getLatestTrade(key)}catch(e){console.error("trade db read",e.message)}const mem=aiRuntime.get(key);const ar={state:mem?.state==="AI_COMPLETED"?"WAITING_H1_CLOSE":(mem?.state||"WAITING_H1_CLOSE"),aiCalled:!!mem?.aiCalled||!!latestTrade,lastAiAt:mem?.lastAiAt||latestTrade?.signal_time||null,lastDecision:mem?.lastDecision||latestTrade?.side||null};const hourly=!!latestTrade||current?.mode==="HOURLY_D1_MTF_ANALYSIS";res.json({symbol:key,activeTrade,latestTrade,engine:"D1_H1_M15_M5_HOURLY",trigger:"CLOSED_H1",monitor:{d1:"CONTEXT",h1:hourly?"ANALYZED":"WAITING_CLOSE",m15:hourly?"CONFIRMED":"WAITING_H1",m5:hourly?"EXECUTION_CHECKED":"WAITING_H1"},legacyM5:{closed:closedM5,required:12,ingestOnly:true},aiRuntime:ar,latest:current});});
 async function run(symbol,candles,fundamental={},h1Context={}){if(!Number.isFinite(Number(fundamental.score)))fundamental=await getFundamental();const technical=analyzeSMC(candles,h1Context),side=technical.bullishScore>=technical.bearishScore?"BUY":"SELL",techScore=Math.max(technical.bullishScore,technical.bearishScore);const fundamentalMissing=!Number.isFinite(Number(fundamental.score)),fundamentalScore=fundamentalMissing?null:Number(fundamental.score),mandatory=side==="BUY"?technical.mandatoryBuy:technical.mandatorySell;let weightedScore=fundamentalScore==null?+(techScore*.7).toFixed(2):+(techScore*.7+fundamentalScore*.3).toFixed(2),result;if(!mandatory||techScore<minTech)result=noTrade(!mandatory?"Mandatory SMC setup incomplete":"Technical score below threshold");else if(fundamentalScore==null)result=noTrade("Fundamental snapshot missing");else if(weightedScore<minFinal)result=noTrade("Final weighted score below threshold");else{aiRuntime.set(symbol,{state:"AI_CALLED",aiCalled:true,lastAiAt:new Date().toISOString(),lastDecision:null});try{result=await aiDecision({symbol,timeframe:"M5",trigger:"H1_CLOSE_12_M5",weights:{technical:70,fundamental:30},technical,technicalScore:techScore,technicalDirection:side,fundamental:{...fundamental,score:fundamentalScore},weightedScore,candles});result=enforceWeb1Blueprint(result);aiRuntime.set(symbol,{state:"AI_COMPLETED",aiCalled:true,lastAiAt:new Date().toISOString(),lastDecision:result.decision||null});}catch(e){aiRuntime.set(symbol,{state:"AI_ERROR",aiCalled:true,lastAiAt:new Date().toISOString(),lastDecision:null,error:e.message});throw e;}}if(!aiRuntime.get(symbol)?.aiCalled)aiRuntime.set(symbol,{state:"SMC_REJECTED",aiCalled:false,lastAiAt:aiRuntime.get(symbol)?.lastAiAt||null,lastDecision:result.decision||"NO_TRADE"});return{technicalScore:techScore,fundamentalScore,fundamentalStatus:fundamentalMissing?"MISSING":"LIVE_INPUT",weightedScore,technical,aiCalled:!!aiRuntime.get(symbol)?.aiCalled,result,analyzedAt:new Date().toISOString()};}
 app.post("/api/m5/candle",bridgeAuth,async(req,res)=>{
