@@ -166,6 +166,8 @@ async function learnFromClosedTrades(symbol,events=[]){
  for(const t of events){
   if(!["TP1_REACHED","TP1","TP2","SL"].includes(t?.status))continue;
   try{
+   // Send the price-triggered outcome immediately; AI review is not on the notification critical path.
+   try{await sendTelegramLifecycle(symbol,t)}catch(te){console.error("Telegram immediate outcome failed",te.message)}
    const memory=await getLearningMemory(symbol,100);
    const prior=memory.find(x=>x.hourly_id===t.hourly_id);
    if(prior?.reviewed_at && t.status==="TP1_REACHED")continue;
@@ -180,7 +182,7 @@ async function learnFromClosedTrades(symbol,events=[]){
    console.log("LEARNING_HISTORY_CONTEXT",symbol,t.hourly_id,JSON.stringify(historicalCandles.available));
    const review=await reviewTrade({symbol,hourlyId:t.hourly_id,side:t.side,entry:+t.entry,stopLoss:+t.stop_loss,tp1:+t.tp1,tp2:+t.tp2,confidence:t.confidence,status:t.status,pnlPoints:+t.pnl_points||0,signalContext:prior?.context||{},savedRegime:prior?.regime||null,savedStrategy:prior?.strategy||null,historicalCandles});
    await saveTradeReview(t.hourly_id,t.status,+t.pnl_points||0,{...review,reviewStage:t.status==="TP1_REACHED"?"TP1_INTERMEDIATE":"FINAL"});
-   console.log("TRADE_LEARNING_REVIEWED",symbol,t.hourly_id,t.status,JSON.stringify({regime:review.marketRegime,strategy:review.strategyUsed,cause:review.primaryCause,lesson:review.lesson}));try{await sendTelegramLifecycle(symbol,t,review)}catch(te){console.error("Telegram review update failed",te.message)}
+   console.log("TRADE_LEARNING_REVIEWED",symbol,t.hourly_id,t.status,JSON.stringify({regime:review.marketRegime,strategy:review.strategyUsed,cause:review.primaryCause,lesson:review.lesson}));
   }catch(e){console.error("TRADE_LEARNING_REVIEW_ERROR",symbol,t?.hourly_id,e.message)}
  }
 }
