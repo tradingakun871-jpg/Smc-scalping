@@ -74,7 +74,8 @@ function fallbackDecision(p){
  const family=breakout?"BREAKOUT_DIRECT":engulf&&displacement?"ENGULFING_DIRECT":null;
  if(!family)return wait("Fallback: belum ada breakout close atau engulfing dengan displacement terkonfirmasi");
  const regime=breakout?"BREAKOUT_HIGH_VOLATILITY":"TREND";
- const eligible=entries.filter(([k,v])=>k.includes(family)&&k.includes(side)&&(!k.includes("regime")||k.includes(regime))&&Number(v.weightedPnlPoints)>0);
+ const patterns=p?.adaptiveProfile?.bestEntryPatterns||[];
+ const eligible=entries.filter(([k,v])=>k===family&&patterns.some(q=>q.strategy===family&&q.side===side&&q.regime===regime&&Number(q.samples)>=20&&Number(q.effectiveSamples)>=20&&Number(q.expectancyPoints)>0&&q.sampleStatus!=="INSUFFICIENT"));
  if(!eligible.length)return wait("Fallback: pola live tidak cocok dengan metode historis tervalidasi");
  const swing=side==="BUY"?Math.min(...prior.map(x=>Number(x.low))):Math.max(...prior.map(x=>Number(x.high)));
  const entry=Number(now.close),risk=Math.abs(entry-swing);
