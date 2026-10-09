@@ -49,7 +49,7 @@ export async function reviewPendingSetup(payload){
 /**
  * Web1 deterministic emergency fallback. Only activated on API credit/quota
  * failure or missing API key; never changes the normal AI decision path.
- * Standard methods require >=20 finalized samples per matching cohort.\n * Temporary POI MIXED BUY exception requires >=14 observed trades and strict live confirmation.
+ * Temporary fallback execution has no historical sample minimum.\n * AI learning promotion thresholds remain unchanged.
  * Rejects any ambiguous structure instead of fabricating an entry.
  */
 function fallbackDecision(p){
@@ -109,10 +109,6 @@ function fallbackDecision(p){
    return {decision:sideTemp,confidence:65,entry:entryTemp,stopLoss:candidateTemp.stop,takeProfit1:entryTemp+direction*risk,takeProfit2:entryTemp+direction*2*risk,marketRegime:continuation?"TREND":"BREAKOUT_HIGH_VOLATILITY",strategyUsed:candidateTemp.name,dailyBiasReason:"D1 konteks",h1Reason:"H1 searah",m15Reason:"M15 searah",m5Reason:"M5 konfirmasi "+candidateTemp.name,technicalReason:"Fallback sementara tanpa minimum sampel, struktur tervalidasi",fundamentalReason:"Tidak mengasumsikan fundamental",entryReason:"Fallback "+candidateTemp.name+" setelah konfirmasi M5",invalidation:"Invalidasi di "+candidateTemp.stop,fallbackMode:true,fallbackException:"TEMP_NO_MIN_SAMPLES"};
   }
  }
- const a=p?.adaptiveProfile?.strategyAdjustments||{};
- const b=p?.adaptiveProfile?.longTermLearning?.strategyAdjustments||{};
- const entries=Object.entries(a).filter(([k,v])=>Number(v.samples)>=20&&Number(v.winRatePct)>=55&&Number(v.weightedPnlPoints)>0&&v.action==="PREFER"&&Number(v.effectiveSamples)>=20);
- if(!entries.length)return wait("Fallback: belum ada metode dengan minimum 20 sampel tervalidasi dan expectancy positif");
  const last=h.at(-1),prev=h.at(-2),mLast=m.at(-1),mPrev=m.at(-2),now=c.at(-1),before=c.at(-2);
  const hSide=Number(last.close)>Number(prev.high)?"BUY":Number(last.close)<Number(prev.low)?"SELL":null;
  const mSide=Number(mLast.close)>Number(mPrev.close)&&Number(mLast.close)>Number(mLast.open)?"BUY":Number(mLast.close)<Number(mPrev.close)&&Number(mLast.close)<Number(mLast.open)?"SELL":null;
@@ -125,14 +121,11 @@ function fallbackDecision(p){
  const family=breakout?"BREAKOUT_DIRECT":engulf&&displacement?"ENGULFING_DIRECT":null;
  if(!family)return wait("Fallback: belum ada breakout close atau engulfing dengan displacement terkonfirmasi");
  const regime=breakout?"BREAKOUT_HIGH_VOLATILITY":"TREND";
- const patterns=p?.adaptiveProfile?.bestEntryPatterns||[];
- const eligible=entries.filter(([k,v])=>k===family&&patterns.some(q=>q.strategy===family&&q.side===side&&q.regime===regime&&Number(q.samples)>=20&&Number(q.effectiveSamples)>=20&&Number(q.expectancyPoints)>0&&q.sampleStatus!=="INSUFFICIENT"));
- if(!eligible.length)return wait("Fallback: pola live tidak cocok dengan metode historis tervalidasi");
  const swing=side==="BUY"?Math.min(...prior.map(x=>Number(x.low))):Math.max(...prior.map(x=>Number(x.high)));
  const entry=Number(now.close),risk=Math.abs(entry-swing);
  if(!(risk>=3.5&&risk<=6)||side==="BUY"&&swing>=entry||side==="SELL"&&swing<=entry)return wait("Fallback: invalidasi struktural tidak memenuhi SL 35–60 pips");
  const direction=side==="BUY"?1:-1;
- return {decision:side,confidence:70,entry,stopLoss:swing,takeProfit1:entry+direction*risk,takeProfit2:entry+direction*2*risk,marketRegime:regime,strategyUsed:family,dailyBiasReason:"Konteks D1 dipakai sebagai referensi, bukan pengganti struktur",h1Reason:"Penutupan H1 menembus struktur sebelumnya",m15Reason:"M15 mengonfirmasi arah H1",m5Reason:"M5 menunjukkan "+family+" dengan body displacement",technicalReason:"Fallback rule-based; kohort historis >=20 sampel dan positif, struktur H1/M15 searah",fundamentalReason:"Fundamental tidak dipaksakan saat API tidak tersedia",entryReason:"Fallback "+family+" "+side+" setelah close M5 terkonfirmasi; SL pada swing struktural",invalidation:"Close melewati swing struktural "+swing,fallbackMode:true};
+ return {decision:side,confidence:70,entry,stopLoss:swing,takeProfit1:entry+direction*risk,takeProfit2:entry+direction*2*risk,marketRegime:regime,strategyUsed:family,dailyBiasReason:"Konteks D1 dipakai sebagai referensi, bukan pengganti struktur",h1Reason:"Penutupan H1 menembus struktur sebelumnya",m15Reason:"M15 mengonfirmasi arah H1",m5Reason:"M5 menunjukkan "+family+" dengan body displacement",technicalReason:"Fallback sementara tanpa minimum sampel; breakout/engulfing dengan struktur H1/M15 terkonfirmasi",fundamentalReason:"Fundamental tidak dipaksakan saat API tidak tersedia",entryReason:"Fallback "+family+" "+side+" setelah close M5 terkonfirmasi; SL pada swing struktural",invalidation:"Close melewati swing struktural "+swing,fallbackMode:true};
 }
 export async function aiDecision(payload){
  try{return await openAiDecision(payload)}
