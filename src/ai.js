@@ -58,7 +58,7 @@ function fallbackDecision(p){
  if(h.length<3||m.length<5||c.length<12)return wait("Fallback: data candle tertutup tidak cukup");
  const valid=x=>x&&[x.open,x.high,x.low,x.close].every(v=>Number.isFinite(Number(v)))&&Number(x.high)>=Number(x.low);
  if(![...h.slice(-3),...m.slice(-5),...c.slice(-12)].every(valid))return wait("Fallback: candle tidak valid");
- const candidate=(p?.adaptiveProfile?.bestEntryPatterns||[]).find(q=>q.strategy==="POI"&&q.regime==="MIXED"&&q.side==="BUY"&&Number(q.samples)>=14&&Number(q.wins)>=12&&Number(q.expectancyPoints)>0);
+ const candidate=(p?.adaptiveProfile?.bestEntryPatterns||[]).find(q=>q.strategy==="POI"&&q.regime==="MIXED"&&q.side==="BUY");
  if(candidate){
   const hLast=h.at(-1),hPrev=h.at(-2),mLast=m.at(-1),mPrev=m.at(-2),now=c.at(-1);
   const bullishH=Number(hLast.close)>Number(hLast.open)&&Number(hLast.close)>=Number(hPrev.close);
@@ -79,10 +79,10 @@ function fallbackDecision(p){
    const entry=Number(last.close),sl=Math.min(zone.floor, ...c.slice(-7).map(x=>Number(x.low)));
    const risk=entry-sl,price=Number(last.close);
    if(risk>=3.5&&risk<=6&&price<entry+risk&&Number(last.close)>Number(last.open)){
-    return {decision:"BUY",confidence:70,entry,stopLoss:sl,takeProfit1:entry+risk,takeProfit2:entry+2*risk,marketRegime:"MIXED",strategyUsed:"POI",dailyBiasReason:"D1 hanya konteks",h1Reason:"H1 bullish terkonfirmasi",m15Reason:"M15 bullish terkonfirmasi",m5Reason:"Retest FVG bullish fresh dan close kembali di atas zona",technicalReason:"Fallback sementara POI MIXED BUY: 14 sampel, 12 win, 2 loss; belum mencapai syarat promosi 20",fundamentalReason:"Fundamental tidak diasumsikan saat API unavailable",entryReason:"POI BUY MIXED: retest FVG M5 fresh dengan konfirmasi H1/M15, SL di bawah struktur",invalidation:"POI batal jika harga menembus swing/FVG "+sl,fallbackMode:true,fallbackException:"TEMP_POI_MIXED_BUY_14_SAMPLES"};
+    return {decision:"BUY",confidence:70,entry,stopLoss:sl,takeProfit1:entry+risk,takeProfit2:entry+2*risk,marketRegime:"MIXED",strategyUsed:"POI",dailyBiasReason:"D1 hanya konteks",h1Reason:"H1 bullish terkonfirmasi",m15Reason:"M15 bullish terkonfirmasi",m5Reason:"Retest FVG bullish fresh dan close kembali di atas zona",technicalReason:"Fallback sementara POI MIXED BUY: konfirmasi struktur live, tanpa minimum sampel",fundamentalReason:"Fundamental tidak diasumsikan saat API unavailable",entryReason:"POI BUY MIXED: retest FVG M5 fresh dengan konfirmasi H1/M15, SL di bawah struktur",invalidation:"POI batal jika harga menembus swing/FVG "+sl,fallbackMode:true,fallbackException:"TEMP_NO_MIN_SAMPLES"};
    }
   }
-  return wait("Fallback POI MIXED BUY: menunggu FVG fresh, retest, konfirmasi H1/M15 dan SL struktural 35–60 pips");
+  // Continue evaluating breakout candidates when POI conditions are not met.
  }
  // Temporary experimental methods: no historical sample minimum, live structure still mandatory.
  const lastC=c.at(-1),prevC=c.at(-2),hC=h.at(-1),mC=m.at(-1);
