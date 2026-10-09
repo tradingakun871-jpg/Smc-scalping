@@ -84,6 +84,31 @@ function fallbackDecision(p){
   }
   return wait("Fallback POI MIXED BUY: menunggu FVG fresh, retest, konfirmasi H1/M15 dan SL struktural 35–60 pips");
  }
+ // Temporary experimental methods: no historical sample minimum, live structure still mandatory.
+ const lastC=c.at(-1),prevC=c.at(-2),hC=h.at(-1),mC=m.at(-1);
+ const buy=Number(hC.close)>Number(hC.open)&&Number(mC.close)>Number(mC.open);
+ const sell=Number(hC.close)<Number(hC.open)&&Number(mC.close)<Number(mC.open);
+ const sideTemp=buy?"BUY":sell?"SELL":null;
+ if(sideTemp){
+  const bull=sideTemp==="BUY",entryTemp=Number(lastC.close),priorTemp=c.slice(-9,-2);
+  const boundary=bull?Math.max(...priorTemp.map(x=>Number(x.high))):Math.min(...priorTemp.map(x=>Number(x.low)));
+  const broke=bull?Number(prevC.close)>boundary:Number(prevC.close)<boundary;
+  const retest=bull?Number(lastC.low)<=boundary&&entryTemp>boundary&&entryTemp>Number(lastC.open):Number(lastC.high)>=boundary&&entryTemp<boundary&&entryTemp<Number(lastC.open);
+  const base=c.slice(-4,-1),baseHigh=Math.max(...base.map(x=>Number(x.high))),baseLow=Math.min(...base.map(x=>Number(x.low)));
+  const impulse=c.at(-5),impRange=Number(impulse.high)-Number(impulse.low),impBody=Math.abs(Number(impulse.close)-Number(impulse.open));
+  const aligned=bull?Number(impulse.close)>Number(impulse.open):Number(impulse.close)<Number(impulse.open);
+  const body=Math.abs(Number(lastC.close)-Number(lastC.open)),range=Number(lastC.high)-Number(lastC.low);
+  const continuation=impRange>0&&impBody/impRange>=0.6&&aligned&&baseHigh-baseLow<=impRange*1.25&&range>0&&body/range>=0.6&&(bull?entryTemp>baseHigh&&Number(prevC.close)<=baseHigh:entryTemp<baseLow&&Number(prevC.close)>=baseLow);
+  const choices=[];
+  if(broke&&retest)choices.push({name:"BREAKOUT_RETEST",stop:bull?Math.min(boundary,...c.slice(-7).map(x=>Number(x.low))):Math.max(boundary,...c.slice(-7).map(x=>Number(x.high)))});
+  if(continuation)choices.push({name:"BREAKOUT_CONTINUATION",stop:bull?baseLow:baseHigh});
+  const candidateTemp=choices.find(q=>{const risk=Math.abs(entryTemp-q.stop);return risk>=3.5&&risk<=6&&(bull?q.stop<entryTemp:q.stop>entryTemp)});
+  if(candidateTemp){
+   const risk=Math.abs(entryTemp-candidateTemp.stop),direction=bull?1:-1;
+   console.log("FALLBACK_METHOD_SELECTED",JSON.stringify({method:candidateTemp.name,side:sideTemp,temporary:true}));
+   return {decision:sideTemp,confidence:65,entry:entryTemp,stopLoss:candidateTemp.stop,takeProfit1:entryTemp+direction*risk,takeProfit2:entryTemp+direction*2*risk,marketRegime:continuation?"TREND":"BREAKOUT_HIGH_VOLATILITY",strategyUsed:candidateTemp.name,dailyBiasReason:"D1 konteks",h1Reason:"H1 searah",m15Reason:"M15 searah",m5Reason:"M5 konfirmasi "+candidateTemp.name,technicalReason:"Fallback sementara tanpa minimum sampel, struktur tervalidasi",fundamentalReason:"Tidak mengasumsikan fundamental",entryReason:"Fallback "+candidateTemp.name+" setelah konfirmasi M5",invalidation:"Invalidasi di "+candidateTemp.stop,fallbackMode:true,fallbackException:"TEMP_NO_MIN_SAMPLES"};
+  }
+ }
  const a=p?.adaptiveProfile?.strategyAdjustments||{};
  const b=p?.adaptiveProfile?.longTermLearning?.strategyAdjustments||{};
  const entries=Object.entries(a).filter(([k,v])=>Number(v.samples)>=20&&Number(v.winRatePct)>=55&&Number(v.weightedPnlPoints)>0&&v.action==="PREFER"&&Number(v.effectiveSamples)>=20);
