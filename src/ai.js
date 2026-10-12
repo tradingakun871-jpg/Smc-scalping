@@ -150,10 +150,15 @@ async function claudeJson(instructions,payload,prefix){
  }finally{clearTimeout(timeout)}
 }
 async function withClaudeFallback(primary,secondary,label){
- try{return await primary()}catch(e){
-  console.warn("OPENAI_PROVIDER_FAILED",JSON.stringify({operation:label,reason:String(e?.message||e).slice(0,180)}));
-  try{const result=await secondary();console.info("ANTHROPIC_FALLBACK_SUCCESS",JSON.stringify({operation:label}));return result}
-  catch(err){console.error("ANTHROPIC_FALLBACK_FAILED",JSON.stringify({operation:label,reason:String(err?.message||err).slice(0,180)}));throw new AggregateError([e,err],label+" providers unavailable")}
+ // Claude temporarily disabled: OpenAI is the sole external AI provider.
+ // Keep existing call sites and deterministic safety behavior unchanged.
+ try{
+  const result=await primary();
+  console.info("OPENAI_PROVIDER_SUCCESS",JSON.stringify({operation:label,provider:"openai"}));
+  return result;
+ }catch(e){
+  console.error("OPENAI_PROVIDER_FAILED",JSON.stringify({operation:label,reason:String(e?.message||e).slice(0,300)}));
+  throw e;
  }
 }
 
