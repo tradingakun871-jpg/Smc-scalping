@@ -419,6 +419,8 @@ app.post("/api/mtf/analyze",bridgeAuth,async(req,res)=>{try{
  // Normalize the signal key/time to the CLOSED H1 candle slot, never to M5/request arrival time.
  const h1Slot=new Date(h1CloseTime);h1Slot.setUTCMinutes(0,0,0);
  const hourlyId=key+":"+h1Slot.toISOString();
+  // 07:00 WIB to 02:00 WIB next day: 00:00-19:00 UTC.
+  if(new Date().getUTCHours()>=19)return res.json({status:"MARKET_SESSION_CLOSED",hourlyId,openWib:"07:00",closeWib:"02:00"});
  if(lastSignal.get(key+":HOURLY")===hourlyId || await hasHourlyAnalysis(hourlyId) || await hasTradeSignal(hourlyId))return res.json({status:"ALREADY_ANALYZED",hourlyId,latest:latest.get(key)||null});
  const dailyBias=d1.close>d1.open?"BUY":d1.close<d1.open?"SELL":"NEUTRAL";
  const h1Direction=+h1Last.close>+h1Prev.high?"BUY":+h1Last.close<+h1Prev.low?"SELL":(+h1Last.close>=+h1Last.open?"BULLISH":"BEARISH");
@@ -549,7 +551,7 @@ initDb().then(async()=>{
 let lastMarketCloseSweepKey=null;
 async function sweepMarketClosePending(){
  const now=new Date();
- if(now.getUTCHours()!==21)return;
+ if(now.getUTCHours()!==19)return;
  const key=now.toISOString().slice(0,13);
  if(lastMarketCloseSweepKey===key)return;
  lastMarketCloseSweepKey=key;
