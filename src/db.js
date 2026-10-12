@@ -190,16 +190,16 @@ export async function getTradeJournal(symbol,period="daily",date=new Date().toIS
   session={basis:"WIB_CALENDAR_MONTH",displayTimezone:"Asia/Jakarta"};
  }else{
   // Daily XAUUSD journal follows the market session in UTC:
-  // OPEN 22:00 UTC (05:00 WIB) -> CLOSE 21:00 UTC next UTC date (04:00 WIB next WIB day).
+  // OPEN 00:00 UTC (07:00 WIB) -> CLOSE 19:00 UTC (02:00 WIB next WIB day).
   // The selected journal date is the WIB date on which that market session opens.
-  start=new Date(Date.UTC(y,mo,d-1,22,0,0,0));
-  end=new Date(Date.UTC(y,mo,d,21,0,0,0));
+  start=new Date(Date.UTC(y,mo,d,0,0,0,0));
+  end=new Date(Date.UTC(y,mo,d,19,0,0,0));
   session={
    basis:"UTC_MARKET_SESSION",
-   openUtc:"22:00",
-   closeUtc:"21:00",
-   openWib:"05:00",
-   closeWib:"04:00",
+   openUtc:"00:00",
+   closeUtc:"19:00",
+   openWib:"07:00",
+   closeWib:"02:00",
    displayTimezone:"Asia/Jakarta",
    startUtc:start.toISOString(),
    endUtc:end.toISOString()
@@ -364,9 +364,9 @@ export async function cancelPendingAtMarketClose(symbol,now=new Date()){
  if(!pool)return[];
  const t=new Date(now);
  if(Number.isNaN(t.getTime()))return[];
- // Web1 market session blueprint: daily close 21:00 UTC = 04:00 WIB,
- // reopen 22:00 UTC = 05:00 WIB. Cancel only untouched PENDING setups.
- if(t.getUTCHours()!==21)return[];
+ // Web1 market session blueprint: daily close 19:00 UTC = 02:00 WIB,
+ // reopen 00:00 UTC = 07:00 WIB. Cancel only untouched PENDING setups.
+ if(t.getUTCHours()!==19)return[];
  const r=await pool.query(`
   UPDATE trade_results
      SET status='CANCELLED',
@@ -394,7 +394,7 @@ export async function evaluatePendingSetups(symbol,price){
   let cancelReason=null;
   // Do not expire untouched pending setups at calendar-day rollover (00:00 WIB).
   // Web1 lifecycle day is the market session; pending expiry is handled exclusively
-  // by cancelPendingAtMarketClose() at 21:00 UTC / 04:00 WIB.
+  // by cancelPendingAtMarketClose() at 19:00 UTC / 02:00 WIB.
 
   if(!cancelReason && t.side==="BUY" && px<=sl)cancelReason="STRUCTURE_INVALIDATED_BEFORE_ENTRY";
   if(!cancelReason && t.side==="SELL" && px>=sl)cancelReason="STRUCTURE_INVALIDATED_BEFORE_ENTRY";
@@ -453,8 +453,8 @@ export async function resolvePendingSetupReview(hourlyId,resolution,{probability
 export async function updateCancelledShadowLearning(symbol,candle){
  if(!pool)return[];
  const hi=Number(candle?.high),lo=Number(candle?.low),ct=candle?.time?new Date(candle.time):new Date();
- // Shadow is only meaningful within the originating market session (22:00-21:00 UTC).
- const marketSessionClose=(date)=>{const d=new Date(date);const hour=d.getUTCHours();d.setUTCHours(21,0,0,0);if(hour>=22)d.setUTCDate(d.getUTCDate()+1);return d;};
+ // Shadow is only meaningful within the originating market session (00:00-19:00 UTC).
+ const marketSessionClose=(date)=>{const d=new Date(date);const hour=d.getUTCHours();d.setUTCHours(19,0,0,0);if(hour>=19)d.setUTCDate(d.getUTCDate()+1);return d;};
  if(!Number.isFinite(hi)||!Number.isFinite(lo)||Number.isNaN(ct.getTime()))return[];
  const r=await pool.query(`
   SELECT t.*,s.entry_touched_after_cancel,s.shadow_tp1_touched,s.shadow_outcome
