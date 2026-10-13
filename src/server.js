@@ -1,5 +1,6 @@
 import express from "express";
 import crypto from "crypto";
+import {ingestSwing,getSwingStatus} from "./swing.js";
 import {analyzeSMC,analyzeRollingM5} from "./smc.js";
 import {aiDecision,reviewTrade,reviewPendingSetup} from "./ai.js";
 import {getFundamental} from "./fundamental.js";
@@ -398,6 +399,7 @@ app.post("/api/m5/candle",bridgeAuth,async(req,res)=>{
   return res.json({status:closedM5>=12?"H1_BLOCK_READY":"COLLECTING",closedM5,required:12,hour,ingestOnly:true,analysisEndpoint:"/api/mtf/analyze"});
  }catch(e){res.status(400).json({error:e.message})}
 });
+app.get("/api/swing/status",async(req,res)=>{try{res.json(await getSwingStatus())}catch(e){res.status(503).json({error:"SWING_UNAVAILABLE",detail:String(e.message).slice(0,100)})}});
 app.post("/api/mtf/analyze",bridgeAuth,async(req,res)=>{try{
  const {symbol="XAUUSD",previousD1,h1=[],m15=[],m5=[],m3=[],m1=[],fundamental={}}=req.body;
  const key=symbol.toUpperCase();
@@ -412,6 +414,8 @@ app.post("/api/mtf/analyze",bridgeAuth,async(req,res)=>{try{
  try{
   const saved=await Promise.all([saveMtfCandles(key,"H1",H1),saveMtfCandles(key,"M15",M15),saveMtfCandles(key,"M5",M5)]);
   console.log("MTF_HISTORY_SAVED",JSON.stringify({symbol:key,h1:saved[0],m15:saved[1],m5:saved[2]}));
+  // Isolated swing ingestion; never block or change existing H1 scalping decisions.
+  ingestSwing({symbol:key,w1:req.body.w1,h4:req.body.h4,h1:H1,m15:M15}).catch(e=>console.error("SWING_INGEST_ERROR",String(e.message).slice(0,200)));
  }catch(e){console.error("MTF_HISTORY_SAVE_ERROR",key,e.message)}
  const h1Last=H1.at(-1),h1Prev=H1.at(-2);
  const h1CloseTime=new Date(h1Last.time);
