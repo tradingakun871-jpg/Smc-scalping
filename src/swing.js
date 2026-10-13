@@ -18,6 +18,8 @@ export async function ingestSwing({symbol="XAUUSD",w1=[],h4=[],h1=[],m15=[]}){
  }
  // Trigger only on a newly CLOSED H4 bar; idempotency is DB-backed.
  const last=data.h4.at(-1),id=symbol+":SWING:"+iso(last);
+ const ageMs=Date.now()-new Date(last.time).getTime();
+ if(ageMs>12*3600000||ageMs<0){console.warn("SWING_STALE_H4",JSON.stringify({symbol,ageHours:Math.round(ageMs/3600000)}));return;}
  const existing=await pool.query("SELECT id,payload,decision FROM swing_analysis WHERE id=$1",[id]);if(existing.rowCount){if(["BUY","SELL"].includes(existing.rows[0].decision))await notifySwing(id,symbol,iso(last),existing.rows[0].payload).catch(e=>console.error("SWING_NOTIFY_RETRY_ERROR",e.message));return;}
  // Do not run a second live AI call on each H1 retry; lock the H4 trigger.
  if(inFlight.has(id))return;
