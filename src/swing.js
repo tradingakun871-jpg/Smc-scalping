@@ -1,5 +1,6 @@
 import pg from "pg";
 import OpenAI from "openai";
+import {notifySwing} from "./swing-telegram.js";
 import {trackSwing,registerSwing,swingMetrics} from "./swing-outcomes.js";
 const pool=process.env.DATABASE_URL?new pg.Pool({connectionString:process.env.DATABASE_URL,max:2}):null;
 let ready;
@@ -34,6 +35,7 @@ export async function ingestSwing({symbol="XAUUSD",w1=[],h4=[],h1=[],m15=[]}){
   if(obj.decision!=="NO_TRADE"){const e=+obj.entry,sl=+obj.stopLoss;if(!Number.isFinite(e)||!Number.isFinite(sl)||(obj.decision==="BUY"&&sl>=e)||(obj.decision==="SELL"&&sl<=e)){console.error("SWING_INVALID_RISK");return;}}
   await pool.query("INSERT INTO swing_analysis(id,symbol,trigger_time,decision,payload) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING",[id,symbol,iso(last),obj.decision,JSON.stringify(obj)]);
   await registerSwing(id,symbol,obj);
+  await notifySwing(id,symbol,iso(last),obj).catch(e=>console.error("SWING_NOTIFY_ERROR",e.message));
   console.log("SWING_OPENAI_SUCCESS",JSON.stringify({id,decision:obj.decision}));
  }catch(e){console.error("SWING_OPENAI_ERROR",String(e.message).slice(0,300));}finally{inFlight.delete(id);}
 }
