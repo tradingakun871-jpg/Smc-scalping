@@ -1,5 +1,5 @@
 #property strict
-#property version "1.43"
+#property version "1.44"
 input string ApiUrl="https://smc-scalping-ai-production.up.railway.app/api/m5/candle";
 input string HeartbeatUrl="https://smc-scalping-ai-production.up.railway.app/api/mt5/heartbeat";
 input string MtfUrl="https://smc-scalping-ai-production.up.railway.app/api/mtf/analyze";
@@ -13,7 +13,7 @@ datetime lastMtfH1=0;
 
 string IsoUtc(datetime brokerTime){datetime u=brokerTime-BrokerUtcOffsetHours*3600;MqlDateTime d;TimeToStruct(u,d);return StringFormat("%04d-%02d-%02dT%02d:%02d:00Z",d.year,d.mon,d.day,d.hour,d.min);}
 string JsonCandle(MqlRates &r){return StringFormat("{\"symbol\":\"%s\",\"candle\":{\"time\":\"%s\",\"open\":%.5f,\"high\":%.5f,\"low\":%.5f,\"close\":%.5f,\"tickVolume\":%I64d,\"closed\":true}}",ApiSymbol,IsoUtc(r.time),r.open,r.high,r.low,r.close,r.tick_volume);}
-bool SendRate(MqlRates &r){string body=JsonCandle(r),headers="Content-Type: application/json\r\n",respHeaders;char data[],result[];StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);if(ArraySize(data)>0)ArrayResize(data,ArraySize(data)-1);ResetLastError();int code=WebRequest("POST",ApiUrl,headers,TimeoutMs,data,result,respHeaders);if(code<0){Print("SMC Bridge WebRequest failed=",GetLastError());return false;}Print("SMC Bridge HTTP ",code," | ",CharArrayToString(result,0,-1,CP_UTF8));if(code>=200&&code<300){lastSent=r.time;return true;}return false;}
+bool SendRate(MqlRates &r){string body=JsonCandle(r),headers="Content-Type: application/json\r\nAuthorization: Bearer "+BridgeToken+"\r\n",respHeaders;char data[],result[];StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);if(ArraySize(data)>0)ArrayResize(data,ArraySize(data)-1);ResetLastError();int code=WebRequest("POST",ApiUrl,headers,TimeoutMs,data,result,respHeaders);if(code<0){Print("SMC Bridge WebRequest failed=",GetLastError());return false;}Print("SMC Bridge HTTP ",code," | ",CharArrayToString(result,0,-1,CP_UTF8));if(code>=200&&code<300){lastSent=r.time;return true;}return false;}
 
 bool BackfillCurrentH1(){
  MqlRates current[];ArraySetAsSeries(current,true);
@@ -33,12 +33,12 @@ string RatesJson(ENUM_TIMEFRAMES tf,int count){MqlRates r[];ArraySetAsSeries(r,f
 bool SendMTFAnalysis(){
  MqlRates d1[];ArraySetAsSeries(d1,true);if(CopyRates(_Symbol,PERIOD_D1,1,1,d1)!=1){Print("MTF D1 CopyRates failed");return false;}
  string body="{\"symbol\":\""+ApiSymbol+"\",\"previousD1\":"+CandleObject(d1[0])+",\"w1\":"+RatesJson(PERIOD_W1,12)+",\"h4\":"+RatesJson(PERIOD_H4,40)+",\"h1\":"+RatesJson(PERIOD_H1,48)+",\"m15\":"+RatesJson(PERIOD_M15,96)+",\"m5\":"+RatesJson(PERIOD_M5,100)+"}";
- string headers="Content-Type: application/json\r\n",respHeaders;char data[],result[];StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);if(ArraySize(data)>0)ArrayResize(data,ArraySize(data)-1);
+ string headers="Content-Type: application/json\r\nAuthorization: Bearer "+BridgeToken+"\r\n",respHeaders;char data[],result[];StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);if(ArraySize(data)>0)ArrayResize(data,ArraySize(data)-1);
  ResetLastError();int code=WebRequest("POST",MtfUrl,headers,TimeoutMs,data,result,respHeaders);string resp=CharArrayToString(result,0,-1,CP_UTF8);
  Print("SMC MTF HTTP ",code," | ",resp);if(code>=200&&code<300){lastMtfH1=iTime(_Symbol,PERIOD_H1,0);return true;}return false;
 }
 bool SendLatestClosed(){MqlRates r[];ArraySetAsSeries(r,true);if(CopyRates(_Symbol,PERIOD_M5,1,1,r)!=1)return false;if(r[0].time==lastSent)return true;return SendRate(r[0]);}
-int OnInit(){if(StringLen(BridgeToken)==0){Print("BRIDGE_TOKEN_EMPTY: configure EA input BridgeToken to match Railway BRIDGE_TOKEN");return INIT_PARAMETERS_INCORRECT;}EventSetTimer(2);Print("AI SMC MTF Bridge V1.43 | W1/D1/H4/H1/M15/M5 | chart=",_Symbol);BackfillCurrentH1();return INIT_SUCCEEDED;}
+int OnInit(){if(StringLen(BridgeToken)==0){Print("BRIDGE_TOKEN_EMPTY: configure EA input BridgeToken to match Railway BRIDGE_TOKEN");return INIT_PARAMETERS_INCORRECT;}EventSetTimer(2);Print("AI SMC MTF Bridge V1.44 | W1/D1/H4/H1/M15/M5 | chart=",_Symbol);BackfillCurrentH1();return INIT_SUCCEEDED;}
 void OnDeinit(const int reason){EventKillTimer();}
 void OnTimer(){if(lastHeartbeat==0||TimeLocal()-lastHeartbeat>=2)SendHeartbeat();static datetime current=0;datetime t=iTime(_Symbol,PERIOD_M5,0);if(t>0&&t!=current){current=t;SendLatestClosed();}datetime h=iTime(_Symbol,PERIOD_H1,0);if(h>0&&h!=lastMtfH1){SendMTFAnalysis();}}
 void OnTick(){}
