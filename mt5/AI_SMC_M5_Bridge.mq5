@@ -39,5 +39,5 @@ bool SendMTFAnalysis(){
 bool SendLatestClosed(){MqlRates r[];ArraySetAsSeries(r,true);if(CopyRates(_Symbol,PERIOD_M5,1,1,r)!=1)return false;if(r[0].time==lastSent)return true;return SendRate(r[0]);}
 int OnInit(){EventSetTimer(2);Print("AI SMC MTF Bridge V1.42 | W1/D1/H4/H1/M15/M5 | chart=",_Symbol);BackfillCurrentH1();return INIT_SUCCEEDED;}
 void OnDeinit(const int reason){EventKillTimer();}
-void OnTimer(){if(lastHeartbeat==0||TimeLocal()-lastHeartbeat>=2)SendHeartbeat();static datetime current=0;datetime t=iTime(_Symbol,PERIOD_M5,0);if(t>0&&t!=current){current=t;SendLatestClosed();}datetime h=iTime(_Symbol,PERIOD_H1,0);if(h>0&&h!=lastMtfH1){SendMTFAnalysis();}}}
+void OnTimer(){if(lastHeartbeat==0||TimeLocal()-lastHeartbeat>=2)SendHeartbeat();static datetime current=0;datetime t=iTime(_Symbol,PERIOD_M5,0);if(t>0&&t!=current){current=t;SendLatestClosed();}datetime h=iTime(_Symbol,PERIOD_H1,0);if(h>0&&h!=lastMtfH1){SendMTFAnalysis();}}
 void OnTick(){}
