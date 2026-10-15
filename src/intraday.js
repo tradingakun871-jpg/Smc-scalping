@@ -29,7 +29,7 @@ export async function ingestIntraday({symbol="XAUUSD",d1,h4=[],h1=[],m15=[],m5=[
   const x=o.payload,side=x.decision,e=Number(x.entry),sl=Number(x.stopLoss),tp=Number(x.tp2);
   if(!["BUY","SELL"].includes(side)||![e,sl,tp].every(Number.isFinite))continue;
   let status=o.status,triggeredAt=null,closedAt=null;
-  const bars=(data.m5.length?data.m5:data.m15).filter(bar=>new Date(bar.time)>new Date(o.created_at)).sort((a,b)=>Date.parse(a.time)-Date.parse(b.time));
+  const bars=(data.m5.length?data.m5:data.m15).filter(bar=>new Date(Date.parse(bar.time)+300000)>new Date(o.created_at)).sort((a,b)=>Date.parse(a.time)-Date.parse(b.time));
   for(const bar of bars){
    const t=new Date(bar.time),hitEntry=bar.low<=e&&bar.high>=e,hitSL=side==="BUY"?bar.low<=sl:bar.high>=sl,hitTP=side==="BUY"?bar.high>=tp:bar.low<=tp;
    if(status==="VALID_PENDING"){
@@ -68,5 +68,28 @@ export async function ingestIntraday({symbol="XAUUSD",d1,h4=[],h1=[],m15=[],m5=[
   console.log("INTRADAY_SESSION_DECISION",JSON.stringify({id,decision:x.decision,status}));
   await sendIntradayTelegram(id,session,x.decision,status,x);
  }catch(e){console.error("INTRADAY_ANALYSIS_ERROR",String(e.message).slice(0,240));}finally{busy.delete(id);}
+}
+export async function updateIntradayFromM5(symbol,candle){
+ await init();
+ const t=new Date(candle?.time),lo=Number(candle?.low),hi=Number(candle?.high);
+ if(!Number.isFinite(t.getTime())||![lo,hi].every(Number.isFinite)||lo>hi)return;
+ const rows=await pool.query("SELECT id,decision,status,payload,created_at FROM intraday_signals WHERE symbol=$1 AND status IN ('VALID_PENDING','TRIGGERED') FOR UPDATE SKIP LOCKED",[symbol]);
+ for(const row of rows.rows){
+  const created=new Date(row.created_at),end=new Date(t.getTime()+300000);
+  if(end<=created)continue;
+  const x=row.payload,e=Number(x.entry),sl=Number(x.stopLoss),tp=Number(x.tp2),side=row.decision;
+  if(!["BUY","SELL"].includes(side)||![e,sl,tp].every(Number.isFinite))continue;
+  const entry=lo<=e&&hi>=e,hitSL=side==="BUY"?lo<=sl:hi>=sl,hitTP=side==="BUY"?hi>=tp:lo<=tp;
+  let status=row.status,triggeredAt=null,closedAt=null;
+  if(status==="VALID_PENDING"&&entry){
+   triggeredAt=end;status=hitSL||hitTP?"CANCELLED":"TRIGGERED";
+   if(status==="CANCELLED")closedAt=end;
+  }else if(status==="TRIGGERED"&&(hitSL||hitTP)){status=hitSL&&hitTP?"CANCELLED":hitSL?"SL":"TP2";closedAt=end;}
+  if(status==="VALID_PENDING"&&Date.now()-created.getTime()>12*3600000){status="EXPIRED";closedAt=new Date();}
+  if(status!==row.status){
+   const updated=await pool.query("UPDATE intraday_signals SET status=$2,triggered_at=COALESCE(triggered_at,$3),closed_at=COALESCE(closed_at,$4) WHERE id=$1 AND status=$5",[row.id,status,triggeredAt,closedAt,row.status]);
+   if(updated.rowCount)console.log("INTRADAY_STATUS_CHANGE",JSON.stringify({id:row.id,from:row.status,to:status,source:"M5_INGEST",candleTime:t.toISOString()}));
+  }
+ }
 }
 export async function getIntradayStatus(){await init();const r=await pool.query("SELECT id,session,session_date,decision,status,payload,created_at,triggered_at,closed_at FROM intraday_signals WHERE symbol='XAUUSD' ORDER BY created_at DESC LIMIT 60");return{mode:"INTRADAY_SIGNAL_ONLY",executionEnabled:false,history:r.rows};}
