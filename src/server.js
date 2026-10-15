@@ -1,7 +1,7 @@
 import express from "express";
 import crypto from "crypto";
 import {ingestSwing,getSwingStatus} from "./swing.js";
-import {ingestIntraday,getIntradayStatus} from "./intraday.js";
+import {ingestIntraday,getIntradayStatus,updateIntradayFromM5} from "./intraday.js";
 import {analyzeSMC,analyzeRollingM5} from "./smc.js";
 import {aiDecision,reviewTrade,reviewPendingSetup} from "./ai.js";
 import {getFundamental} from "./fundamental.js";
@@ -383,6 +383,7 @@ app.post("/api/m5/candle",bridgeAuth,async(req,res)=>{
   lastM5Ingest.set(key,ingestId);
   try{
    await saveM5Candle(key,candle);
+   await updateIntradayFromM5(key,candle).catch(e=>console.error("INTRADAY_M5_TRACK_ERROR",e.message));
    const tradeEvents=await updateOpenTrades(key,candle);
    const shadowEvents=await updateCancelledShadowLearning(key,candle).catch(e=>{console.error("CANCELLED_SHADOW_TRACK_ERROR",e.message);return[]});
    for(const ev of shadowEvents)console.log("CANCELLED_SHADOW_UPDATED",key,JSON.stringify(ev));
