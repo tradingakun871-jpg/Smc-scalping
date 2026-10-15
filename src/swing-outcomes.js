@@ -20,7 +20,7 @@ export async function swingMetrics(symbol="XAUUSD"){
  return{finalSamples:n,wins,losses,winRatePct:n?+(wins*100/n).toFixed(2):null,profitFactor:losses?+(wins/losses).toFixed(3):null,netR:wins-losses,pending:c.PENDING||0,active:c.ACTIVE||0,cancelled:c.CANCELLED||0,ambiguous:c.AMBIGUOUS||0,calibrated:n>=100};
 }
 
-export async function trackSwing(symbol,candles=[]){
+export async function trackSwing(symbol,candles=[],timeframe="M15"){
  await init();
  const bars=candles.filter(c=>c.closed!==false&&c.time&&[c.open,c.high,c.low,c.close].every(v=>Number.isFinite(Number(v)))).sort((a,b)=>new Date(a.time)-new Date(b.time));
  if(!bars.length)return;
@@ -29,14 +29,15 @@ export async function trackSwing(symbol,candles=[]){
   let status=o.status,entryAt=o.entry_at,closedAt=null,pnl=null,last=o.last_candle?new Date(o.last_candle):new Date(o.created_at);
   for(const c of bars){
    const t=new Date(c.time);
-   if(t<=last||t<=new Date(o.created_at))continue;
-   last=t;
+   const closedAtTime=new Date(t.getTime()+(timeframe==="M1"?60000:timeframe==="M5"?300000:900000));
+   if(closedAtTime<=last||closedAtTime<=new Date(o.created_at))continue;
+   last=closedAtTime;
    const buy=o.side==="BUY",touch=level=>Number(c.low)<=level&&Number(c.high)>=level;
    const hitSl=buy?Number(c.low)<=o.sl:Number(c.high)>=o.sl;
    const hitTp=buy?Number(c.high)>=o.tp1:Number(c.low)<=o.tp1;
    if(status==="PENDING"&&touch(o.entry)){
-    if(hitSl||hitTp){status="AMBIGUOUS";closedAt=t;break;}
-    status="ACTIVE";entryAt=t;
+    if(hitSl||hitTp){status="AMBIGUOUS";closedAt=closedAtTime;break;}
+    status="ACTIVE";entryAt=closedAtTime;
    }else if(status==="ACTIVE"){
     if(hitSl&&hitTp){status="AMBIGUOUS";closedAt=t;break;}
     if(hitSl||hitTp){status=hitSl?"SL":"TP1";closedAt=t;pnl=hitSl?-1:1;break;}
@@ -45,7 +46,7 @@ export async function trackSwing(symbol,candles=[]){
   if(status==="PENDING"&&last.getTime()-new Date(o.created_at).getTime()>=7*86400000){status="CANCELLED";closedAt=last;}
   if(last>new Date(o.last_candle||o.created_at)){
    await pool.query("UPDATE swing_outcomes SET status=$2,entry_at=$3,closed_at=$4,pnl_r=$5,last_candle=$6 WHERE signal_id=$1 AND status=$7",[o.signal_id,status,entryAt,closedAt,pnl,last,o.status]);
-   if(status!==o.status)console.log("SWING_OUTCOME",JSON.stringify({id:o.signal_id,status,pnl}));
+   if(status!==o.status)console.log("SWING_OUTCOME",JSON.stringify({id:o.signal_id,from:o.status,status,pnl,source:timeframe}));
   }
  }
 }
