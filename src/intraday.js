@@ -27,15 +27,26 @@ export async function ingestIntraday({symbol="XAUUSD",d1,h4=[],h1=[],m15=[],m5=[
  const pending=await pool.query("SELECT id,status,payload,created_at FROM intraday_signals WHERE symbol=$1 AND status IN ('VALID_PENDING','TRIGGERED')",[symbol]);
  for(const o of pending.rows){
   const x=o.payload,side=x.decision,e=Number(x.entry),sl=Number(x.stopLoss),tp=Number(x.tp2);
-  let status=o.status,at=null;
-  for(const bar of data.m15){
-   const t=new Date(bar.time);if(t<=new Date(o.created_at))continue;
-   const hitEntry=bar.low<=e&&bar.high>=e,hitSL=side==="BUY"?bar.low<=sl:bar.high>=sl,hitTP=side==="BUY"?bar.high>=tp:bar.low<=tp;
-   if(status==="VALID_PENDING"&&hitEntry){status="TRIGGERED";at=t;}
-   if(status==="TRIGGERED"&&(hitSL||hitTP)){status=hitSL&&hitTP?"CANCELLED":hitSL?"SL":"TP2";at=t;break;}
+  if(!["BUY","SELL"].includes(side)||![e,sl,tp].every(Number.isFinite))continue;
+  let status=o.status,triggeredAt=null,closedAt=null;
+  const bars=(data.m5.length?data.m5:data.m15).filter(bar=>new Date(bar.time)>new Date(o.created_at)).sort((a,b)=>Date.parse(a.time)-Date.parse(b.time));
+  for(const bar of bars){
+   const t=new Date(bar.time),hitEntry=bar.low<=e&&bar.high>=e,hitSL=side==="BUY"?bar.low<=sl:bar.high>=sl,hitTP=side==="BUY"?bar.high>=tp:bar.low<=tp;
+   if(status==="VALID_PENDING"){
+    if(!hitEntry)continue;
+    status="TRIGGERED";triggeredAt=t;
+    if(hitSL||hitTP){status="CANCELLED";closedAt=t;break;} // OHLC cannot establish which level was touched first.
+    continue;
+   }
+   if(status==="TRIGGERED"&&(hitSL||hitTP)){
+    status=hitSL&&hitTP?"CANCELLED":hitSL?"SL":"TP2";closedAt=t;break;
+   }
   }
-  if(status==="VALID_PENDING"&&Date.now()-new Date(o.created_at).getTime()>12*3600000){status="EXPIRED";at=new Date();}
-  if(status!==o.status)await pool.query("UPDATE intraday_signals SET status=$2,triggered_at=CASE WHEN $2='TRIGGERED' THEN $3 ELSE triggered_at END,closed_at=CASE WHEN $2 IN ('SL','TP2','CANCELLED','EXPIRED') THEN $3 ELSE closed_at END WHERE id=$1",[o.id,status,at]);
+  if(status==="VALID_PENDING"&&Date.now()-new Date(o.created_at).getTime()>12*3600000){status="EXPIRED";closedAt=new Date();}
+  if(status!==o.status){
+   await pool.query("UPDATE intraday_signals SET status=$2,triggered_at=COALESCE(triggered_at,$3),closed_at=COALESCE(closed_at,$4) WHERE id=$1 AND status=$5",[o.id,status,triggeredAt,closedAt,o.status]);
+   console.log("INTRADAY_STATUS_CHANGE",JSON.stringify({id:o.id,from:o.status,to:status,source:data.m5.length?"M5":"M15"}));
+  }
  }
  if((await pool.query("SELECT 1 FROM intraday_signals WHERE id=$1",[id])).rowCount||busy.has(id))return;
  busy.add(id);
