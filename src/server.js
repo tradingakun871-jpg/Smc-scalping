@@ -1,6 +1,7 @@
 import express from "express";
 import crypto from "crypto";
 import {ingestSwing,getSwingStatus} from "./swing.js";
+import {trackSwing} from "./swing-outcomes.js";
 import {ingestIntraday,getIntradayStatus,updateIntradayFromCandle,updateIntradayFromM5} from "./intraday.js";
 import {analyzeSMC,analyzeRollingM5} from "./smc.js";
 import {aiDecision,reviewTrade,reviewPendingSetup} from "./ai.js";
@@ -374,6 +375,7 @@ app.post("/api/intraday/m1/candle",bridgeAuth,async(req,res)=>{
   const t=new Date(candle?.time),now=Date.now();
   if(!candle||!Number.isFinite(t.getTime())||t.getUTCSeconds()!==0||t.getUTCMinutes()<0||!["open","high","low","close"].every(k=>Number.isFinite(Number(candle[k])))||Number(candle.low)>Number(candle.high)||t.getTime()>now+60000||now-t.getTime()>3600000)return res.status(400).json({error:"INVALID_M1_CANDLE"});
   await updateIntradayFromCandle(symbol,candle,"M1");
+  await trackSwing(symbol,[candle],"M1");
   res.json({ok:true,tracking:"INTRADAY_M1"});
  }catch(e){console.error("INTRADAY_M1_ERROR",String(e.message));res.status(500).json({error:"INTRADAY_M1_FAILED"});}
 });
