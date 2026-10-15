@@ -1,7 +1,7 @@
 import express from "express";
 import crypto from "crypto";
 import {ingestSwing,getSwingStatus} from "./swing.js";
-import {ingestIntraday,getIntradayStatus,updateIntradayFromM5} from "./intraday.js";
+import {ingestIntraday,getIntradayStatus,updateIntradayFromCandle,updateIntradayFromM5} from "./intraday.js";
 import {analyzeSMC,analyzeRollingM5} from "./smc.js";
 import {aiDecision,reviewTrade,reviewPendingSetup} from "./ai.js";
 import {getFundamental} from "./fundamental.js";
@@ -368,6 +368,15 @@ app.get("/api/price",async(req,res)=>{const key=String(req.query.symbol||"XAUUSD
 app.post("/api/telegram/test",bridgeAuth,async(req,res)=>{try{const r=await telegramBroadcast("✅ AI SMC Telegram TEST — koneksi berhasil. Ini bukan sinyal trading.");res.status(r.sent?200:503).json({ok:!!r.sent,success:r.success||0,total:r.total||0,reason:r.reason||null,results:r.results||[]});}catch(e){res.status(502).json({ok:false,error:e.message})}});
 app.get("/api/status",async(req,res)=>{const key=String(req.query.symbol||"XAUUSD").toUpperCase();let closedM5=(buffers.get(key)||[]).length;try{const n=await getCurrentM5Count(key);if(n!=null)closedM5=n}catch(e){console.error("M5 status db read",e.message)}const current=latest.get(key)||null;let activeTrade=null,latestTrade=null;try{activeTrade=await getLatestOpenTrade(key);latestTrade=await getLatestTrade(key)}catch(e){console.error("trade db read",e.message)}const mem=aiRuntime.get(key);const ar={state:mem?.state==="AI_COMPLETED"?"WAITING_H1_CLOSE":(mem?.state||"WAITING_H1_CLOSE"),aiCalled:!!mem?.aiCalled||!!latestTrade,lastAiAt:mem?.lastAiAt||latestTrade?.signal_time||null,lastDecision:mem?.lastDecision||latestTrade?.side||null};const hourly=!!latestTrade||current?.mode==="HOURLY_D1_MTF_ANALYSIS";res.json({symbol:key,activeTrade,latestTrade,engine:"D1_H1_M15_M5_HOURLY",trigger:"CLOSED_H1",monitor:{d1:"CONTEXT",h1:hourly?"ANALYZED":"WAITING_CLOSE",m15:hourly?"CONFIRMED":"WAITING_H1",m5:hourly?"EXECUTION_CHECKED":"WAITING_H1"},legacyM5:{closed:closedM5,required:12,ingestOnly:true},aiRuntime:ar,latest:current});});
 async function run(symbol,candles,fundamental={},h1Context={}){if(!Number.isFinite(Number(fundamental.score)))fundamental=await getFundamental();const technical=analyzeSMC(candles,h1Context),side=technical.bullishScore>=technical.bearishScore?"BUY":"SELL",techScore=Math.max(technical.bullishScore,technical.bearishScore);const fundamentalMissing=!Number.isFinite(Number(fundamental.score)),fundamentalScore=fundamentalMissing?null:Number(fundamental.score),mandatory=side==="BUY"?technical.mandatoryBuy:technical.mandatorySell;let weightedScore=fundamentalScore==null?+(techScore*.7).toFixed(2):+(techScore*.7+fundamentalScore*.3).toFixed(2),result;if(!mandatory||techScore<minTech)result=noTrade(!mandatory?"Mandatory SMC setup incomplete":"Technical score below threshold");else if(fundamentalScore==null)result=noTrade("Fundamental snapshot missing");else if(weightedScore<minFinal)result=noTrade("Final weighted score below threshold");else{aiRuntime.set(symbol,{state:"AI_CALLED",aiCalled:true,lastAiAt:new Date().toISOString(),lastDecision:null});try{result=await aiDecision({symbol,timeframe:"M5",trigger:"H1_CLOSE_12_M5",weights:{technical:70,fundamental:30},technical,technicalScore:techScore,technicalDirection:side,fundamental:{...fundamental,score:fundamentalScore},weightedScore,candles});result=enforceWeb1Blueprint(result);aiRuntime.set(symbol,{state:"AI_COMPLETED",aiCalled:true,lastAiAt:new Date().toISOString(),lastDecision:result.decision||null});}catch(e){aiRuntime.set(symbol,{state:"AI_ERROR",aiCalled:true,lastAiAt:new Date().toISOString(),lastDecision:null,error:e.message});throw e;}}if(!aiRuntime.get(symbol)?.aiCalled)aiRuntime.set(symbol,{state:"SMC_REJECTED",aiCalled:false,lastAiAt:aiRuntime.get(symbol)?.lastAiAt||null,lastDecision:result.decision||"NO_TRADE"});return{technicalScore:techScore,fundamentalScore,fundamentalStatus:fundamentalMissing?"MISSING":"LIVE_INPUT",weightedScore,technical,aiCalled:!!aiRuntime.get(symbol)?.aiCalled,result,analyzedAt:new Date().toISOString()};}
+app.post("/api/intraday/m1/candle",bridgeAuth,async(req,res)=>{
+ try{
+  const symbol=String(req.body.symbol||"XAUUSD").toUpperCase(),candle=req.body.candle;
+  const t=new Date(candle?.time),now=Date.now();
+  if(!candle||!Number.isFinite(t.getTime())||t.getUTCSeconds()!==0||t.getUTCMinutes()<0||!["open","high","low","close"].every(k=>Number.isFinite(Number(candle[k])))||Number(candle.low)>Number(candle.high)||t.getTime()>now+60000||now-t.getTime()>3600000)return res.status(400).json({error:"INVALID_M1_CANDLE"});
+  await updateIntradayFromCandle(symbol,candle,"M1");
+  res.json({ok:true,tracking:"INTRADAY_M1"});
+ }catch(e){console.error("INTRADAY_M1_ERROR",String(e.message));res.status(500).json({error:"INTRADAY_M1_FAILED"});}
+});
 app.post("/api/m5/candle",bridgeAuth,async(req,res)=>{
  lastMt5At=Date.now();
  try{
