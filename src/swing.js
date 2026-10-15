@@ -12,7 +12,7 @@ export async function ingestSwing({symbol="XAUUSD",w1=[],h4=[],h1=[],m15=[]}){
  const data={w1:clean(w1,52),h4:clean(h4,120),h1:clean(h1,24),m15:clean(m15,64)};
  if(data.w1.length<12||data.h4.length<24||data.h1.length<12||data.m15.length<24){console.warn("SWING_DATA_INCOMPLETE",JSON.stringify(Object.fromEntries(Object.entries(data).map(([k,v])=>[k,v.length]))));return;}
  await init();
- await trackSwing(symbol,data.m15);
+ // Swing outcomes are tracked by closed MT5 M1 candles, not by historical M15 analysis batches.
  for(const [tf,arr] of [["W1",data.w1],["H4",data.h4]]){
   for(const c of arr)await pool.query("INSERT INTO swing_candles(symbol,timeframe,candle_time,payload) VALUES($1,$2,$3,$4) ON CONFLICT(symbol,timeframe,candle_time) DO UPDATE SET payload=EXCLUDED.payload",[symbol,tf,iso(c),JSON.stringify(c)]);
  }
