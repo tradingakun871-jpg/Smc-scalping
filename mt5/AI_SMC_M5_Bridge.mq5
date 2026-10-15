@@ -1,9 +1,10 @@
 #property strict
-#property version "1.42"
+#property version "1.43"
 input string ApiUrl="https://smc-scalping-ai-production.up.railway.app/api/m5/candle";
 input string HeartbeatUrl="https://smc-scalping-ai-production.up.railway.app/api/mt5/heartbeat";
 input string MtfUrl="https://smc-scalping-ai-production.up.railway.app/api/mtf/analyze";
 input string ApiSymbol="XAUUSD";
+input string BridgeToken=""; // Must match Railway BRIDGE_TOKEN; never commit actual token
 input int BrokerUtcOffsetHours=0;
 input int TimeoutMs=10000;
 datetime lastSent=0;
@@ -26,7 +27,7 @@ bool BackfillCurrentH1(){
  return true;
 }
 
-bool SendHeartbeat(){string headers="Content-Type: application/json\r\n",respHeaders;char data[],result[];MqlTick tick;double bid=0,ask=0,last=0;if(SymbolInfoTick(_Symbol,tick)){bid=tick.bid;ask=tick.ask;last=tick.last>0?tick.last:tick.bid;}string body=StringFormat("{\"symbol\":\"%s\",\"price\":%.5f,\"bid\":%.5f,\"ask\":%.5f,\"last\":%.5f}",ApiSymbol,last,bid,ask,last);StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);if(ArraySize(data)>0)ArrayResize(data,ArraySize(data)-1);ResetLastError();int code=WebRequest("POST",HeartbeatUrl,headers,TimeoutMs,data,result,respHeaders);string resp=CharArrayToString(result,0,-1,CP_UTF8);if(code>=200&&code<300){lastHeartbeat=TimeLocal();Print("SMC Heartbeat ONLINE | HTTP ",code," | ",resp);if(StringFind(resp,"\"resyncRequired\":true")>=0){Print("SMC Bridge RESYNC requested by server");BackfillCurrentH1();}return true;}Print("SMC Heartbeat failed HTTP=",code," err=",GetLastError()," | ",resp);return false;}
+bool SendHeartbeat(){string headers="Content-Type: application/json\r\nAuthorization: Bearer "+BridgeToken+"\r\n",respHeaders;char data[],result[];MqlTick tick;double bid=0,ask=0,last=0;if(SymbolInfoTick(_Symbol,tick)){bid=tick.bid;ask=tick.ask;last=tick.last>0?tick.last:tick.bid;}string body=StringFormat("{\"symbol\":\"%s\",\"price\":%.5f,\"bid\":%.5f,\"ask\":%.5f,\"last\":%.5f}",ApiSymbol,last,bid,ask,last);StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);if(ArraySize(data)>0)ArrayResize(data,ArraySize(data)-1);ResetLastError();int code=WebRequest("POST",HeartbeatUrl,headers,TimeoutMs,data,result,respHeaders);string resp=CharArrayToString(result,0,-1,CP_UTF8);if(code>=200&&code<300){lastHeartbeat=TimeLocal();Print("SMC Heartbeat ONLINE | HTTP ",code," | ",resp);if(StringFind(resp,"\"resyncRequired\":true")>=0){Print("SMC Bridge RESYNC requested by server");BackfillCurrentH1();}return true;}Print("SMC Heartbeat failed HTTP=",code," err=",GetLastError()," | ",resp);return false;}
 string CandleObject(MqlRates &r){return StringFormat("{\"time\":\"%s\",\"open\":%.5f,\"high\":%.5f,\"low\":%.5f,\"close\":%.5f,\"tickVolume\":%I64d,\"closed\":true}",IsoUtc(r.time),r.open,r.high,r.low,r.close,r.tick_volume);}
 string RatesJson(ENUM_TIMEFRAMES tf,int count){MqlRates r[];ArraySetAsSeries(r,false);int n=CopyRates(_Symbol,tf,1,count,r);if(n<=0)return "[]";string out="[";for(int i=0;i<n;i++){if(i>0)out+=",";out+=CandleObject(r[i]);}return out+"]";}
 bool SendMTFAnalysis(){
@@ -37,7 +38,7 @@ bool SendMTFAnalysis(){
  Print("SMC MTF HTTP ",code," | ",resp);if(code>=200&&code<300){lastMtfH1=iTime(_Symbol,PERIOD_H1,0);return true;}return false;
 }
 bool SendLatestClosed(){MqlRates r[];ArraySetAsSeries(r,true);if(CopyRates(_Symbol,PERIOD_M5,1,1,r)!=1)return false;if(r[0].time==lastSent)return true;return SendRate(r[0]);}
-int OnInit(){EventSetTimer(2);Print("AI SMC MTF Bridge V1.42 | W1/D1/H4/H1/M15/M5 | chart=",_Symbol);BackfillCurrentH1();return INIT_SUCCEEDED;}
+int OnInit(){if(StringLen(BridgeToken)==0){Print("BRIDGE_TOKEN_EMPTY: configure EA input BridgeToken to match Railway BRIDGE_TOKEN");return INIT_PARAMETERS_INCORRECT;}EventSetTimer(2);Print("AI SMC MTF Bridge V1.43 | W1/D1/H4/H1/M15/M5 | chart=",_Symbol);BackfillCurrentH1();return INIT_SUCCEEDED;}
 void OnDeinit(const int reason){EventKillTimer();}
 void OnTimer(){if(lastHeartbeat==0||TimeLocal()-lastHeartbeat>=2)SendHeartbeat();static datetime current=0;datetime t=iTime(_Symbol,PERIOD_M5,0);if(t>0&&t!=current){current=t;SendLatestClosed();}datetime h=iTime(_Symbol,PERIOD_H1,0);if(h>0&&h!=lastMtfH1){SendMTFAnalysis();}}
 void OnTick(){}
