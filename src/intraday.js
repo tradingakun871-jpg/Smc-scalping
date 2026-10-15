@@ -6,6 +6,14 @@ let ready;
 const init=()=>ready??=(async()=>{if(!pool)throw Error("INTRADAY_DB_UNAVAILABLE");await pool.query(`CREATE TABLE IF NOT EXISTS intraday_signals(id TEXT PRIMARY KEY,symbol TEXT NOT NULL,session TEXT NOT NULL,session_date TEXT NOT NULL,decision TEXT NOT NULL,status TEXT NOT NULL,payload JSONB NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),triggered_at TIMESTAMPTZ,closed_at TIMESTAMPTZ)`);})();
 const clean=(xs,n)=>Array.isArray(xs)?xs.slice(-n).filter(x=>x&&x.closed!==false&&x.time&&Number.isFinite(Date.parse(x.time))&&["open","high","low","close"].every(k=>Number.isFinite(Number(x[k])))).map(x=>({time:x.time,open:+x.open,high:+x.high,low:+x.low,close:+x.close})):[];
 const wib=(d,options)=>new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Jakarta",...options}).format(d);
+
+async function sendIntradayTelegram(id,session,decision,status,x){
+ const token=process.env.TELEGRAM_BOT_TOKEN;
+ const ids=[process.env.TELEGRAM_CHAT_ID,process.env.TELEGRAM_GROUP_CHAT_ID].flatMap(v=>String(v||"").split(",")).map(v=>v.trim()).filter(Boolean);
+ if(!token||!ids.length){console.error("INTRADAY_TELEGRAM_NOT_CONFIGURED",id);return;}
+ const msg=["📊 AI INTRADAY XAUUSD", "Sesi: "+session, "Keputusan: "+decision, "Status: "+status, "Entry: "+(x.entry??"—"), "SL: "+(x.stopLoss??"—"), "TP1 (1R): "+(x.tp1??"—"), "TP2 (2R): "+(x.tp2??"—"), "Confidence: "+(x.confidence??"—")+"%", "Alasan: "+String(x.reason||"—").slice(0,700), "Waktu: "+new Date().toLocaleString("id-ID",{timeZone:"Asia/Jakarta"})+" WIB"].join("\n");
+ for(const chatId of [...new Set(ids)]){try{const resp=await fetch("https://api.telegram.org/bot"+token+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:msg}),signal:AbortSignal.timeout(10000)});const body=await resp.json().catch(()=>({}));if(!resp.ok||!body.ok)console.error("INTRADAY_TELEGRAM_FAILED",JSON.stringify({id,http:resp.status,description:String(body.description||"").slice(0,140)}));else console.log("INTRADAY_TELEGRAM_SENT",JSON.stringify({id}));}catch(e){console.error("INTRADAY_TELEGRAM_FAILED",JSON.stringify({id,error:String(e.message).slice(0,140)}));}}
+}
 export async function ingestIntraday({symbol="XAUUSD",d1,h4=[],h1=[],m15=[],m5=[]}){
  const data={d1:d1&&d1.closed!==false?d1:null,h4:clean(h4,80),h1:clean(h1,48),m15:clean(m15,96),m5:clean(m5,100)};
  if(!data.d1||data.h4.length<12||data.h1.length<12||data.m15.length<20){console.warn("INTRADAY_DATA_INCOMPLETE",JSON.stringify({symbol,h4:data.h4.length,h1:data.h1.length,m15:data.m15.length}));return;}
@@ -47,6 +55,7 @@ export async function ingestIntraday({symbol="XAUUSD",d1,h4=[],h1=[],m15=[],m5=[
   }
   await pool.query("INSERT INTO intraday_signals(id,symbol,session,session_date,decision,status,payload) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING",[id,symbol,session,day,x.decision,status,JSON.stringify(x)]);
   console.log("INTRADAY_SESSION_DECISION",JSON.stringify({id,decision:x.decision,status}));
+  await sendIntradayTelegram(id,session,x.decision,status,x);
  }catch(e){console.error("INTRADAY_ANALYSIS_ERROR",String(e.message).slice(0,240));}finally{busy.delete(id);}
 }
 export async function getIntradayStatus(){await init();const r=await pool.query("SELECT id,session,session_date,decision,status,payload,created_at,triggered_at,closed_at FROM intraday_signals WHERE symbol='XAUUSD' ORDER BY created_at DESC LIMIT 60");return{mode:"INTRADAY_SIGNAL_ONLY",executionEnabled:false,history:r.rows};}
