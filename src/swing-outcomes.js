@@ -39,8 +39,8 @@ export async function trackSwing(symbol,candles=[],timeframe="M15"){
     if(hitSl||hitTp){status="AMBIGUOUS";closedAt=closedAtTime;break;}
     status="ACTIVE";entryAt=closedAtTime;
    }else if(status==="ACTIVE"){
-    if(hitSl&&hitTp){status="AMBIGUOUS";closedAt=t;break;}
-    if(hitSl||hitTp){status=hitSl?"SL":"TP1";closedAt=t;pnl=hitSl?-1:1;break;}
+    if(hitSl&&hitTp){status="AMBIGUOUS";closedAt=closedAtTime;break;}
+    if(hitSl||hitTp){status=hitSl?"SL":"TP1";closedAt=closedAtTime;pnl=hitSl?-1:1;break;}
    }
   }
   if(status==="PENDING"&&last.getTime()-new Date(o.created_at).getTime()>=7*86400000){status="CANCELLED";closedAt=last;}
