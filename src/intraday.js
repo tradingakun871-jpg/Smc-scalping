@@ -18,12 +18,11 @@ export async function ingestIntraday({symbol="XAUUSD",d1,h4=[],h1=[],m15=[],m5=[
  const data={d1:d1&&d1.closed!==false?d1:null,h4:clean(h4,80),h1:clean(h1,48),m15:clean(m15,96),m5:clean(m5,100)};
  if(!data.d1||data.h4.length<12||data.h1.length<12||data.m15.length<20){console.warn("INTRADAY_DATA_INCOMPLETE",JSON.stringify({symbol,h4:data.h4.length,h1:data.h1.length,m15:data.m15.length}));return;}
  await init();
- const last=data.h1.at(-1),now=new Date(last.time),age=Date.now()-now.getTime();
- if(age<0||age>3*3600000){console.warn("INTRADAY_STALE_H1",JSON.stringify({symbol,age}));return;}
+ const last=data.h1.at(-1),lastM15=data.m15.at(-1),now=new Date(Date.parse(lastM15.time)+900000),age=Date.now()-now.getTime();
+ if(age<0||age>30*60000){console.warn("INTRADAY_STALE_H1",JSON.stringify({symbol,age}));return;}
  const hour=Number(wib(now,{hour:"2-digit",hourCycle:"h23"}));
  const session=hour>=20||hour<5?"NEW_YORK":hour>=14?"LONDON":"ASIA";
  const day=wib(now,{year:"numeric",month:"2-digit",day:"2-digit"});
- const lastM15=data.m15.at(-1);
  const id=symbol+":INTRADAY:"+day+":"+session+":"+new Date(lastM15.time).toISOString();
  const pending=await pool.query("SELECT id,status,payload,created_at FROM intraday_signals WHERE symbol=$1 AND status IN ('VALID_PENDING','TRIGGERED')",[symbol]);
  for(const o of pending.rows){
