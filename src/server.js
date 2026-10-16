@@ -21,13 +21,13 @@ function telegramDestinations(){
   .filter(Boolean);
  return [...new Set(ids)];
 }
-async function telegramBroadcast(text){
+async function telegramBroadcast(text,detailUrl=null){
  const token=process.env.TELEGRAM_BOT_TOKEN,chatIds=telegramDestinations();
  if(!token||!chatIds.length)return{sent:false,reason:"TELEGRAM_NOT_CONFIGURED",destinations:0};
  const results=[];
  for(const chatId of chatIds){
   try{
-   const resp=await fetch("https://api.telegram.org/bot"+token+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text})});
+   const resp=await fetch("https://api.telegram.org/bot"+token+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text,...(detailUrl?{reply_markup:{inline_keyboard:[[{text:"🔎 Lihat Detail Entry",url:detailUrl}]]}}:{})})});
    const body=await resp.json().catch(()=>({}));
    results.push({chatIdMasked:String(chatId).slice(-6),ok:!!(resp.ok&&body.ok),http:resp.status,error:body?.description||null});
   }catch(e){results.push({chatIdMasked:String(chatId).slice(-6),ok:false,http:null,error:e.message})}
@@ -61,59 +61,31 @@ function calculateTargetProbabilities(record,result){
  return result;
 }
 
+function telegramDetailUrl(t){
+ const base=String(process.env.PUBLIC_APP_URL||"https://smc-scalping-ai-production.up.railway.app").replace(/\\/$/,"");
+ const id=String(t?.hourly_id||t?.hourlyId||"");
+ return base+"/?view=trade-detail"+(id?"&hourlyId="+encodeURIComponent(id):"");
+}
 async function sendTelegramSignal(symbol,record){
  const r=record?.result;
- const hourly=record?.mode==="HOURLY_D1_MTF_ANALYSIS";
- if(!r||(!hourly&&!["BUY","SELL"].includes(r.decision)))return{sent:false,reason:"NO_SIGNAL"};
-
+ if(!r||!["BUY","SELL"].includes(r.decision))return{sent:false,reason:"NO_TRADE_NOT_NOTIFIED"};
  const msg=[
- "🤖 AI XAUUSD ANALYSIS",
- symbol+" • "+r.decision,
- "",
- "📊 MARKET CONTEXT",
- "D1 Bias: "+(record.dailyBias??"—"),
- "D1: "+(r.dailyBiasReason||"—"),
- "H1 Structure: "+(record.h1Direction??"—"),
- "H1: "+(r.h1Reason||"—"),
- "M15: "+(r.m15Reason||"—"),
- "M5 Trigger: "+(r.m5Reason||"—"),
- "",
- "🧠 FUNDAMENTAL",
- r.fundamentalReason||"—",
- "",
- "🎯 TRADE PLAN",
- (r.decision==="NO_TRADE"?"WAIT / NO ENTRY":r.decision+" Entry: "+(r.entry??"—")),
+ "🎯 TRADE PLAN — "+symbol,
+ "Arah: "+r.decision,
+ "Strategi: "+(r.strategy||record.strategy||"—"),
+ "Entry: "+(r.entry??"—"),
  "SL: "+(r.stopLoss??"—"),
- "TP1: "+(r.takeProfit1??"—"),
- "TP2: "+(r.takeProfit2??"—"),
- "Confidence: "+(r.confidence??0)+"%",
- "TP1 Probability: "+(r.tp1ProbabilityPct??"—")+"%",
- "TP2 Probability: "+(r.tp2ProbabilityPct??"—")+"%",
- "Reason Probabilitas: "+(r.probabilityReason||"—"),
- "Technical Score: "+(record.technicalScore??"—"),
- "Fundamental Score: "+(record.fundamentalScore??"—"),
- "Final Score: "+(record.weightedScore??"—"),
- "",
- r.decision==="NO_TRADE"?"📌 ALASAN WAIT":"📌 KENAPA ENTRY?",
- r.entryReason||r.technicalReason||"—",
- "",
- "❌ INVALIDATION",
- r.invalidation||"—",
- "",
- "Status: AI COMPLETED"
- ].join("\n");
- return await telegramBroadcast(msg);
+ "TP1 (1R): "+(r.takeProfit1??"—"),
+ "TP2 (2R): "+(r.takeProfit2??"—"),
+ "Status: VALID PENDING"
+ ].join("\\n");
+ return await telegramBroadcast(msg,telegramDetailUrl(record));
 }
 async function sendTelegramLifecycle(symbol,t,review=null){
-
  const status=String(t?.status||t?.lifecycle_status||"REVIEW");
- const labels={ENTRY_TOUCHED:"✅ ENTRY VALID / ACTIVE",SETUP_VALID:"✅ SETUP VALID / DIPERTAHANKAN",CANCELLED:"❌ ENTRY CANCELLED",TP1_REACHED:"🟢 REVIEW TP1 REACHED",TP1:"🟢 REVIEW TP1",TP2:"🏆 REVIEW TP2",SL:"🔴 REVIEW SL"};
- const lines=["🔄 AI TRADE REVIEW UPDATE",symbol+" • "+(t?.side||"—"),"",labels[status]||("Status: "+status),"Signal: "+(t?.hourly_id||"—"),"Entry: "+(t?.entry??"—"),"SL: "+(t?.stop_loss??"—"),"TP1: "+(t?.tp1??"—"),"TP2: "+(t?.tp2??"—")];
- if(t?.lifecycle_reason)lines.push("Lifecycle: "+t.lifecycle_reason);
- if(review){lines.push("","🧠 AI REVIEW","Regime: "+(review.marketRegime||"—"),"Method: "+(review.strategyUsed||"—"),"Cause: "+(review.primaryCause||"—"),"Lesson: "+(review.lesson||"—"));}
- if(status==="CANCELLED")lines.push("","Catatan: dibatalkan sebelum entry; tidak dihitung WIN/LOSS.");
- if(status==="ENTRY_TOUCHED")lines.push("","Catatan: harga menyentuh entry; setup menjadi ACTIVE. Ini belum WIN/LOSS.");if(status==="TP1_REACHED")lines.push("","Catatan: TP1 tercapai; proteksi tracker berpindah ke BE (harga entry) sambil menunggu TP2 atau retrace BE.");if(status==="SETUP_VALID")lines.push("","Catatan: target sempat terlewati sebelum entry, tetapi AI menilai setup masih fresh, valid, reachable, dan probability masih tinggi. Level asli tetap digunakan.");
- return await telegramBroadcast(lines.join("\n"));
+ const labels={ENTRY_TOUCHED:"ENTRY ACTIVE",SETUP_VALID:"SETUP VALID",CANCELLED:"CANCELLED",TP1_REACHED:"TP1 REACHED",TP1:"TP1 REACHED",TP2:"TP2 REACHED",SL:"STOP LOSS"};
+ const lines=["📌 "+symbol+" — "+(labels[status]||status),"Arah: "+(t?.side||"—"),"Entry: "+(t?.entry??"—"),"SL: "+(t?.stop_loss??"—"),"TP1: "+(t?.tp1??"—"),"TP2: "+(t?.tp2??"—")];
+ return await telegramBroadcast(lines.join("\\n"),telegramDetailUrl(t));
 }
 async function handlePendingSetupEvents(symbol,events=[]){
  for(const t of events){
