@@ -23,7 +23,7 @@ export async function ingestIntraday({symbol="XAUUSD",d1,h4=[],h1=[],m15=[],m5=[
  const hour=Number(wib(now,{hour:"2-digit",hourCycle:"h23"}));
  const session=hour>=20||hour<5?"NEW_YORK":hour>=14?"LONDON":"ASIA";
  const day=wib(now,{year:"numeric",month:"2-digit",day:"2-digit"});
- const id=symbol+":INTRADAY:"+day+":"+session;
+ const id=symbol+":INTRADAY:"+day+":"+session+":"+now.toISOString().slice(0,13);
  const pending=await pool.query("SELECT id,status,payload,created_at FROM intraday_signals WHERE symbol=$1 AND status IN ('VALID_PENDING','TRIGGERED')",[symbol]);
  for(const o of pending.rows){
   const x=o.payload,side=x.decision,e=Number(x.entry),sl=Number(x.stopLoss),tp=Number(x.tp2);
@@ -48,7 +48,7 @@ export async function ingestIntraday({symbol="XAUUSD",d1,h4=[],h1=[],m15=[],m5=[
    console.log("INTRADAY_STATUS_CHANGE",JSON.stringify({id:o.id,from:o.status,to:status,source:data.m5.length?"M5":"M15"}));
   }
  }
- if((await pool.query("SELECT 1 FROM intraday_signals WHERE id=$1",[id])).rowCount||busy.has(id))return;
+ if((await pool.query("SELECT 1 FROM intraday_signals WHERE id=$1 OR (symbol=$2 AND session_date=$3 AND session=$4 AND decision IN (\'BUY\',\'SELL\') AND status NOT IN (\'CANCELLED\',\'EXPIRED\')) LIMIT 1",[id,symbol,day,session])).rowCount||busy.has(id))return;
  busy.add(id);
  try{
   if(!process.env.OPENAI_API_KEY){console.error("INTRADAY_OPENAI_MISSING");return;}
@@ -66,7 +66,7 @@ export async function ingestIntraday({symbol="XAUUSD",d1,h4=[],h1=[],m15=[],m5=[
   }
   await pool.query("INSERT INTO intraday_signals(id,symbol,session,session_date,decision,status,payload) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING",[id,symbol,session,day,x.decision,status,JSON.stringify(x)]);
   console.log("INTRADAY_SESSION_DECISION",JSON.stringify({id,decision:x.decision,status}));
-  await sendIntradayTelegram(id,session,x.decision,status,x);
+  if(status==="VALID_PENDING")await sendIntradayTelegram(id,session,x.decision,status,x);
  }catch(e){console.error("INTRADAY_ANALYSIS_ERROR",String(e.message).slice(0,240));}finally{busy.delete(id);}
 }
 export async function updateIntradayFromCandle(symbol,candle,timeframe="M5"){
