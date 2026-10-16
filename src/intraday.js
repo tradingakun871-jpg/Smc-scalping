@@ -23,7 +23,8 @@ export async function ingestIntraday({symbol="XAUUSD",d1,h4=[],h1=[],m15=[],m5=[
  const hour=Number(wib(now,{hour:"2-digit",hourCycle:"h23"}));
  const session=hour>=20||hour<5?"NEW_YORK":hour>=14?"LONDON":"ASIA";
  const day=wib(now,{year:"numeric",month:"2-digit",day:"2-digit"});
- const id=symbol+":INTRADAY:"+day+":"+session+":"+now.toISOString().slice(0,13);
+ const lastM15=data.m15.at(-1);
+ const id=symbol+":INTRADAY:"+day+":"+session+":"+new Date(lastM15.time).toISOString();
  const pending=await pool.query("SELECT id,status,payload,created_at FROM intraday_signals WHERE symbol=$1 AND status IN ('VALID_PENDING','TRIGGERED')",[symbol]);
  for(const o of pending.rows){
   const x=o.payload,side=x.decision,e=Number(x.entry),sl=Number(x.stopLoss),tp=Number(x.tp2);
@@ -54,7 +55,7 @@ export async function ingestIntraday({symbol="XAUUSD",d1,h4=[],h1=[],m15=[],m5=[
   if(!process.env.OPENAI_API_KEY){console.error("INTRADAY_OPENAI_MISSING");return;}
   const history=await pool.query("SELECT decision,status,payload->>'reason' AS reason FROM intraday_signals WHERE symbol=$1 ORDER BY created_at DESC LIMIT 40",[symbol]);
   const ai=new OpenAI({apiKey:process.env.OPENAI_API_KEY});
-  const response=await ai.responses.create({model:process.env.OPENAI_MODEL||"gpt-5.6",instructions:"Anda analis Intraday XAUUSD, terpisah dari scalping. D1 konteks, H4 arah, H1 trigger, M15 entry, M5 refinement. Setiap sesi Asia/London/New York cari aktif minimal satu kandidat BUY/SELL yang valid menggunakan POI, sweep, MSS/BOS, breakout retest, supply demand. Entry pending boleh belum tersentuh. Hanya candle closed, POI fresh dan reachable, konfirmasi H1/M15 dan invalidasi struktural jelas. SL dinamis berdasarkan struktur/liquidity, tanpa batas pips tetap. TP2 wajib tepat RR 1:2. Jangan buat harga atau bukti fiktif. Jika tidak ada setup valid gunakan NO_TRADE dan jelaskan alasan. Output JSON saja: decision,entry,stopLoss,tp1,tp2,confidence,setup,reason,h1Confirmation,m15Confirmation,invalidation.",input:JSON.stringify({symbol,session,day,data,history:history.rows})});
+  const response=await ai.responses.create({model:process.env.OPENAI_MODEL||"gpt-5.6",instructions:"Anda analis Intraday XAUUSD, terpisah dari scalping. D1 konteks, H4 arah, H1 trigger, M15 entry, M5 refinement. Deteksi dan terbitkan setup hanya ketika struktur dan konfirmasi candle M15 terbaru valid, tanpa jadwal sinyal per jam. Sepanjang sesi Asia/London/New York cari peluang BUY/SELL yang valid menggunakan POI, sweep, MSS/BOS, breakout retest, supply demand. Entry pending boleh belum tersentuh. Hanya candle closed, POI fresh dan reachable, konfirmasi H1/M15 dan invalidasi struktural jelas. SL dinamis berdasarkan struktur/liquidity, tanpa batas pips tetap. TP2 wajib tepat RR 1:2. Jangan buat harga atau bukti fiktif. Jika tidak ada setup valid gunakan NO_TRADE dan jelaskan alasan. Output JSON saja: decision,entry,stopLoss,tp1,tp2,confidence,setup,reason,h1Confirmation,m15Confirmation,invalidation.",input:JSON.stringify({symbol,session,day,data,history:history.rows})});
   let x;try{x=JSON.parse(response.output_text.replace(/^```(?:json)?\s*|\s*```$/g,""));}catch{console.error("INTRADAY_INVALID_JSON",id);return;}
   if(!["BUY","SELL","NO_TRADE"].includes(x.decision))return;
   let status="NO_VALID_SETUP";
