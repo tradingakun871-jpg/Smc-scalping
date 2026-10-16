@@ -10,12 +10,14 @@ export async function notifySwing(id,symbol,trigger,signal){
  const chats=[...new Set([process.env.TELEGRAM_CHAT_ID,process.env.TELEGRAM_GROUP_CHAT_ID].flatMap(x=>String(x||"").split(",")).map(x=>x.trim()).filter(Boolean))];
  if(!token||!chats.length){console.warn("SWING_TELEGRAM_NOT_CONFIGURED");return;}
  await init();
- const lines=["📊 AI SWING SIGNAL | "+symbol,"Keputusan: "+signal.decision,"H4: "+wib(trigger)+" WIB","W1: "+val(signal.weeklyBias),"H4 Trigger: "+val(signal.h4Trigger),"H1: "+val(signal.h1Confirmation),"M15 POI: "+val(signal.m15Entry),"Setup: "+val(signal.setup),"Entry: "+val(signal.entry),"SL: "+val(signal.stopLoss),"TP1: "+val(signal.tp1),"TP2: "+val(signal.tp2),"TP3: "+val(signal.tp3),"Alasan: "+val(signal.reason),"Invalidasi: "+val(signal.invalidation),"Mode: SIGNAL ONLY — bukan auto-entry"];
- const message=lines.join("\n").slice(0,3900);
+ const lines=["🎯 SWING TRADE PLAN — "+symbol,"Arah: "+signal.decision,"Setup: "+val(signal.setup),"Entry: "+val(signal.entry),"SL: "+val(signal.stopLoss),"TP1: "+val(signal.tp1),"TP2: "+val(signal.tp2),"TP3: "+val(signal.tp3),"Mode: SIGNAL ONLY"];
+ const message=lines.join("\n");
+ const base=String(process.env.PUBLIC_APP_URL||"https://smc-scalping-ai-production.up.railway.app").replace(/\/$/,"");
+ const reply_markup={inline_keyboard:[[{text:"🔎 Lihat Detail Entry",url:base+"/?view=swing&signalId="+encodeURIComponent(id)}]]};
  for(const chat of chats){
   if((await pool.query("SELECT 1 FROM swing_telegram_deliveries WHERE signal_id=$1 AND chat_id=$2",[id,chat])).rowCount)continue;
   try{
-   const response=await fetch("https://api.telegram.org/bot"+token+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chat,text:message})});
+   const response=await fetch("https://api.telegram.org/bot"+token+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chat,text:message,reply_markup})});
    if(!response.ok)throw Error("HTTP "+response.status);
    const json=await response.json();if(!json.ok)throw Error("Telegram response not ok");
    await pool.query("INSERT INTO swing_telegram_deliveries(signal_id,chat_id) VALUES($1,$2) ON CONFLICT DO NOTHING",[id,chat]);
