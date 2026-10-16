@@ -62,7 +62,7 @@ function calculateTargetProbabilities(record,result){
 }
 
 function telegramDetailUrl(t){
- const base=String(process.env.PUBLIC_APP_URL||"https://smc-scalping-ai-production.up.railway.app").replace(/\\/$/,"");
+ const base=String(process.env.PUBLIC_APP_URL||"https://smc-scalping-ai-production.up.railway.app").replace(/\/$/,"");
  const id=String(t?.hourly_id||t?.hourlyId||"");
  return base+"/?view=trade-detail"+(id?"&hourlyId="+encodeURIComponent(id):"");
 }
