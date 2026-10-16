@@ -78,14 +78,14 @@ async function sendTelegramSignal(symbol,record){
  "TP1 (1R): "+(r.takeProfit1??"—"),
  "TP2 (2R): "+(r.takeProfit2??"—"),
  "Status: VALID PENDING"
- ].join("\\n");
+ ].join("\n");
  return await telegramBroadcast(msg,telegramDetailUrl(record));
 }
 async function sendTelegramLifecycle(symbol,t,review=null){
  const status=String(t?.status||t?.lifecycle_status||"REVIEW");
  const labels={ENTRY_TOUCHED:"ENTRY ACTIVE",SETUP_VALID:"SETUP VALID",CANCELLED:"CANCELLED",TP1_REACHED:"TP1 REACHED",TP1:"TP1 REACHED",TP2:"TP2 REACHED",SL:"STOP LOSS"};
  const lines=["📌 "+symbol+" — "+(labels[status]||status),"Arah: "+(t?.side||"—"),"Entry: "+(t?.entry??"—"),"SL: "+(t?.stop_loss??"—"),"TP1: "+(t?.tp1??"—"),"TP2: "+(t?.tp2??"—")];
- return await telegramBroadcast(lines.join("\\n"),telegramDetailUrl(t));
+ return await telegramBroadcast(lines.join("\n"),telegramDetailUrl(t));
 }
 async function handlePendingSetupEvents(symbol,events=[]){
  for(const t of events){
