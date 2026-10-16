@@ -11,8 +11,11 @@ async function sendIntradayTelegram(id,session,decision,status,x){
  const token=process.env.TELEGRAM_BOT_TOKEN;
  const ids=[process.env.TELEGRAM_CHAT_ID,process.env.TELEGRAM_GROUP_CHAT_ID].flatMap(v=>String(v||"").split(",")).map(v=>v.trim()).filter(Boolean);
  if(!token||!ids.length){console.error("INTRADAY_TELEGRAM_NOT_CONFIGURED",id);return;}
- const msg=["📊 AI INTRADAY XAUUSD", "Sesi: "+session, "Keputusan: "+decision, "Status: "+status, "Entry: "+(x.entry??"—"), "SL: "+(x.stopLoss??"—"), "TP1 (1R): "+(x.tp1??"—"), "TP2 (2R): "+(x.tp2??"—"), "Confidence: "+(x.confidence??"—")+"%", "Alasan: "+String(x.reason||"—").slice(0,700), "Waktu: "+new Date().toLocaleString("id-ID",{timeZone:"Asia/Jakarta"})+" WIB"].join("\n");
- for(const chatId of [...new Set(ids)]){try{const resp=await fetch("https://api.telegram.org/bot"+token+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:msg}),signal:AbortSignal.timeout(10000)});const body=await resp.json().catch(()=>({}));if(!resp.ok||!body.ok)console.error("INTRADAY_TELEGRAM_FAILED",JSON.stringify({id,http:resp.status,description:String(body.description||"").slice(0,140)}));else console.log("INTRADAY_TELEGRAM_SENT",JSON.stringify({id}));}catch(e){console.error("INTRADAY_TELEGRAM_FAILED",JSON.stringify({id,error:String(e.message).slice(0,140)}));}}
+ const msg=["🎯 INTRADAY TRADE PLAN — XAUUSD","Sesi: "+session,"Arah: "+decision,"Status: "+status,"Entry: "+(x.entry??"—"),"SL: "+(x.stopLoss??"—"),"TP1 (1R): "+(x.tp1??"—"),"TP2 (2R): "+(x.tp2??"—")].join("\n");
+ const base=String(process.env.PUBLIC_APP_URL||"https://smc-scalping-ai-production.up.railway.app").replace(/\/$/,"");
+ const detailUrl=base+"/?view=intraday&signalId="+encodeURIComponent(id);
+ const reply_markup={inline_keyboard:[[{text:"🔎 Lihat Detail Entry",url:detailUrl}]]};
+ for(const chatId of [...new Set(ids)]){try{const resp=await fetch("https://api.telegram.org/bot"+token+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:chatId,text:msg,reply_markup}),signal:AbortSignal.timeout(10000)});const body=await resp.json().catch(()=>({}));if(!resp.ok||!body.ok)console.error("INTRADAY_TELEGRAM_FAILED",JSON.stringify({id,http:resp.status,description:String(body.description||"").slice(0,140)}));else console.log("INTRADAY_TELEGRAM_SENT",JSON.stringify({id}));}catch(e){console.error("INTRADAY_TELEGRAM_FAILED",JSON.stringify({id,error:String(e.message).slice(0,140)}));}}
 }
 export async function ingestIntraday({symbol="XAUUSD",d1,h4=[],h1=[],m15=[],m5=[]}){
  const data={d1:d1&&d1.closed!==false?d1:null,h4:clean(h4,80),h1:clean(h1,48),m15:clean(m15,96),m5:clean(m5,100)};
