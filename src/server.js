@@ -8,6 +8,7 @@ import {aiDecision,reviewTrade,reviewPendingSetup} from "./ai.js";
 import {getFundamental} from "./fundamental.js";
 import {initDb,checkDb,touchHeartbeat,getHeartbeat,saveM5Candle,getM5Block,getCurrentM5Count,saveMtfCandles,getHistoricalCandles,saveTradeSignal,updateOpenTrades,updateOpenTradesFromPrice,getTradeStats,getTradeJournal,getLatestOpenTrade,hasTradeSignal,hasHourlyAnalysis,saveHourlyAnalysis,normalizeLegacyHourlySignals,getLatestTrade,saveTradeLearningContext,saveTradeReview,getLearningMemory,getRollingLearningMemory,getLongTermLearningMemory,getCancelledLearningMemory,getTradesBetween,getLearningSummary,cancelPendingAtMarketClose,evaluatePendingSetups,resolvePendingSetupReview,updateCancelledShadowLearning,getCancelledShadowLearning,getLearningBaseline,getCancelledShadowBaseline} from "./db.js";
 const app=express();app.use(express.json({limit:"1mb"}));app.use(express.static("public"));
+const intradayContext=new Map();
 const buffers=new Map(),lastSignal=new Map(),latest=new Map(),aiRuntime=new Map(),livePrice=new Map(),lastM5Ingest=new Map();let lastMt5At=0;
 const minTech=Number(process.env.MIN_TECHNICAL_SCORE||70),minFinal=Number(process.env.MIN_FINAL_SCORE||70);
 function bridgeAuth(req,res,next){const expected=process.env.BRIDGE_TOKEN;if(!expected)return res.status(503).json({error:"BRIDGE_TOKEN not configured"});const auth=req.get("authorization")||"";const token=auth.startsWith("Bearer ")?auth.slice(7):"";const a=Buffer.from(token),b=Buffer.from(expected);if(a.length!==b.length||!crypto.timingSafeEqual(a,b))return res.status(401).json({error:"Unauthorized bridge"});next();}
@@ -395,6 +396,20 @@ app.post("/api/m5/candle",bridgeAuth,async(req,res)=>{
   try{
    await saveM5Candle(key,candle);
    await updateIntradayFromM5(key,candle).catch(e=>console.error("INTRADAY_M5_TRACK_ERROR",e.message));
+   // Reconstruct each closed M15 candle from the existing MT5 M5 feed.
+   // The latest H1/D1/H4 context is refreshed by the existing MTF bridge.
+   const context=intradayContext.get(key);
+   if(context&&t.getUTCMinutes()%15===10&&Date.now()-context.receivedAt<3*3600000){
+    const quarter=new Date(t);quarter.setUTCMinutes(Math.floor(t.getUTCMinutes()/15)*15,0,0);
+    const bars=await getM5Block(key,new Date(Date.UTC(t.getUTCFullYear(),t.getUTCMonth(),t.getUTCDate(),t.getUTCHours(),0,0)));
+    const chunk=bars.filter(b=>{const bt=new Date(b.time).getTime();return bt>=quarter.getTime()&&bt<quarter.getTime()+900000;}).sort((a,b)=>Date.parse(a.time)-Date.parse(b.time));
+    if(chunk.length===3&&chunk.every((b,i)=>new Date(b.time).getTime()===quarter.getTime()+i*300000)){
+     const m15Bar={time:quarter.toISOString(),open:+chunk[0].open,high:Math.max(...chunk.map(b=>+b.high)),low:Math.min(...chunk.map(b=>+b.low)),close:+chunk[2].close,closed:true};
+     context.m15=[...context.m15.filter(b=>new Date(b.time).getTime()<quarter.getTime()),m15Bar].slice(-96);
+     context.m5=[...context.m5.filter(b=>new Date(b.time).getTime()<quarter.getTime()),...chunk].slice(-100);
+     void ingestIntraday({symbol:key,d1:context.d1,h4:context.h4,h1:context.h1,m15:context.m15,m5:context.m5}).catch(e=>console.error("INTRADAY_M15_EVALUATION_ERROR",e.message));
+    }
+   }
    const tradeEvents=await updateOpenTrades(key,candle);
    const shadowEvents=await updateCancelledShadowLearning(key,candle).catch(e=>{console.error("CANCELLED_SHADOW_TRACK_ERROR",e.message);return[]});
    for(const ev of shadowEvents)console.log("CANCELLED_SHADOW_UPDATED",key,JSON.stringify(ev));
@@ -430,6 +445,7 @@ app.post("/api/mtf/analyze",bridgeAuth,async(req,res)=>{try{
   console.log("MTF_HISTORY_SAVED",JSON.stringify({symbol:key,h1:saved[0],m15:saved[1],m5:saved[2]}));
   // Isolated swing ingestion; never block or change existing H1 scalping decisions.
   ingestSwing({symbol:key,w1:req.body.w1,h4:req.body.h4,h1:H1,m15:M15}).catch(e=>console.error("SWING_INGEST_ERROR",String(e.message).slice(0,200)));
+  intradayContext.set(key,{d1,h4:req.body.h4,h1:H1,m15:M15,m5:M5,receivedAt:Date.now()});
   ingestIntraday({symbol:key,d1,h4:req.body.h4,h1:H1,m15:M15,m5:M5}).catch(e=>console.error("INTRADAY_INGEST_ERROR",String(e.message).slice(0,200)));
  }catch(e){console.error("MTF_HISTORY_SAVE_ERROR",key,e.message)}
  const h1Last=H1.at(-1),h1Prev=H1.at(-2);
