@@ -508,14 +508,19 @@ console.log("AI_ADAPTIVE_PROFILE",JSON.stringify({symbol:key,hourlyId,...adaptiv
   const valid=Number.isFinite(live)&&Number.isFinite(entry)&&Number.isFinite(sl)&&Number.isFinite(tp1);
   const slPassed=valid&&(side==="BUY"?live<=sl:live>=sl);
   const targetPassed=valid&&(side==="BUY"?live>=tp1:live<=tp1);
-  if(!valid||slPassed||targetPassed){
-   const why=!valid?"MISSING_FRESH_MARKET_SNAPSHOT":slPassed?"STOP_ALREADY_PASSED_BEFORE_PUBLICATION":"TARGET_ALREADY_PASSED_BEFORE_PUBLICATION";
+  // A target crossed before a pending LIMIT entry is not itself invalidation. Preserve only an untouched entry zone.
+  const pendingLimit=valid&&(side==="BUY"?live<entry:live>entry);
+  const executionCandles=[...M1,...M3,...M5].filter(x=>x&&Number.isFinite(Number(x.high))&&Number.isFinite(Number(x.low)));
+  const zoneUntouched=executionCandles.length>0&&executionCandles.every(x=>side==="BUY"?Number(x.low)>entry:Number(x.high)<entry);
+  const preserveFreshPending=targetPassed&&pendingLimit&&zoneUntouched&&!slPassed;
+  if(!valid||slPassed||(targetPassed&&!preserveFreshPending)){
+   const why=!valid?"MISSING_FRESH_MARKET_SNAPSHOT":slPassed?"STOP_ALREADY_PASSED_BEFORE_PUBLICATION":"TARGET_ALREADY_PASSED_AND_ZONE_NOT_PROVEN_FRESH";
    console.log("PREPUBLICATION_NO_TRADE",JSON.stringify({symbol:key,hourlyId,why,live,entry,sl,tp1}));
    result={...result,decision:"NO_TRADE",entry:null,stopLoss:null,takeProfit1:null,takeProfit2:null,entryReason:"Pre-publication gate: "+why,technicalReason:"Pre-publication gate: "+why,invalidation:why,prePublicationRejected:true};
   }
  }
  console.log("MTF_DECISION",JSON.stringify({symbol:key,hourlyId,decision:result?.decision,confidence:result?.confidence,entry:result?.entry,stopLoss:result?.stopLoss,tp1:result?.takeProfit1,tp2:result?.takeProfit2,strategy:result?.strategyUsed,reason:result?.entryReason||result?.technicalReason||null,payload:{m1:M1.slice(-90).length,m3:M3.slice(-60).length,m5:M5.slice(-36).length,m15:M15.slice(-32).length,h1:H1.slice(-24).length}}));
- if(["BUY","SELL"].includes(result.decision)&&[result.entry,result.stopLoss,result.takeProfit1,result.takeProfit2].every(v=>Number.isFinite(Number(v)))){await saveTradeSignal({hourlyId,symbol:key,side:result.decision,entry:+result.entry,stopLoss:+result.stopLoss,tp1:+result.takeProfit1,tp2:+result.takeProfit2,confidence:+result.confidence||null,signalTime:h1Slot.toISOString()});
+ if(["BUY","SELL"].includes(result.decision)&&[result.entry,result.stopLoss,result.takeProfit1,result.takeProfit2].every(v=>Number.isFinite(Number(v)))){await saveTradeSignal({hourlyId,symbol:key,side:result.decision,entry:+result.entry,stopLoss:+result.stopLoss,tp1:+result.takeProfit1,tp2:+result.takeProfit2,confidence:+result.confidence||null,signalTime:h4Slot.toISOString()});
  await saveTradeLearningContext({hourlyId,symbol:key,regime:result.marketRegime||"UNKNOWN",strategy:result.strategyUsed||result.executionType||"UNKNOWN",context:{dailyBias,h1Direction,technicalScore:techScore,fundamentalScore,weightedScore,confidence:result.confidence,entryReason:result.entryReason,technicalReason:result.technicalReason,m15Reason:result.m15Reason,m5Reason:result.m5Reason,marketSnapshot:{h1:H1.slice(-12).map(x=>[x.time,x.open,x.high,x.low,x.close]),m15:M15.slice(-16).map(x=>[x.time,x.open,x.high,x.low,x.close]),m5:M5.slice(-24).map(x=>[x.time,x.open,x.high,x.low,x.close])}}})}
  await saveHourlyAnalysis({hourlyId,symbol:key,decision:result.decision});
  const record={mode:"H4_CLOSE_D1_MTF_ANALYSIS",hourlyId,dailyBias,h1Direction,technicalScore:techScore,fundamentalScore,weightedScore,result,analyzedAt:new Date().toISOString()};
